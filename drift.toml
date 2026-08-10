@@ -1,0 +1,3 @@
+[project]
+api-version = 0
+provider = "drift_project:project"
