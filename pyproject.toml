@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "drift-build"
+version = "0.1.0"
+description = "A typed Python project platform with a fast Ninja build backend."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+authors = [{ name = "Curtis Schembri" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.scripts]
+drift = "driftbuild.fast:main"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["driftbuild"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["driftbuild"]
+strict = true
+warn_unreachable = true
