@@ -45,7 +45,7 @@ class OwnedProcess:
         stderr: int | IO[Any] | None = None,
     ):
         if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            creationflags = 0x00000200 | 0x08000000
             start_new_session = False
         else:
             creationflags = 0

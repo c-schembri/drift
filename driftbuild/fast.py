@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -29,9 +30,7 @@ def _root_find(arguments: list[str]) -> Path | None:
 
 
 def _architecture() -> str:
-    machine = (
-        os.environ.get("PROCESSOR_ARCHITECTURE", "") if os.name == "nt" else str(os.uname().machine)  # type: ignore[attr-defined]
-    )
+    machine = platform.machine()
     return {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "arm64"}.get(machine.casefold(), machine.casefold())
 
 

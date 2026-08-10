@@ -33,19 +33,44 @@ class Toolchain:
 
 
 def _vc_environment(architecture: str, state_root: Path | None) -> dict[str, str]:
-    candidates = [
-        Path(os.environ.get("ProgramFiles", "C:/Program Files"))
-        / "Microsoft Visual Studio/2022/Community/VC/Auxiliary/Build/vcvarsall.bat",
-        Path(os.environ.get("ProgramFiles", "C:/Program Files"))
-        / "Microsoft Visual Studio/2022/Professional/VC/Auxiliary/Build/vcvarsall.bat",
-        Path(os.environ.get("ProgramFiles", "C:/Program Files"))
-        / "Microsoft Visual Studio/2022/Enterprise/VC/Auxiliary/Build/vcvarsall.bat",
+    candidates: list[Path] = []
+    vswhere = (
         Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
-        / "Microsoft Visual Studio/2022/BuildTools/VC/Auxiliary/Build/vcvarsall.bat",
-    ]
+        / "Microsoft Visual Studio/Installer/vswhere.exe"
+    )
+    if vswhere.is_file():
+        discovered = subprocess.run(
+            [
+                str(vswhere),
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                "-property",
+                "installationPath",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if discovered.returncode == 0 and discovered.stdout.strip():
+            candidates.append(Path(discovered.stdout.strip()) / "VC/Auxiliary/Build/vcvarsall.bat")
+    candidates.extend(
+        [
+            Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+            / "Microsoft Visual Studio/2022/Community/VC/Auxiliary/Build/vcvarsall.bat",
+            Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+            / "Microsoft Visual Studio/2022/Professional/VC/Auxiliary/Build/vcvarsall.bat",
+            Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+            / "Microsoft Visual Studio/2022/Enterprise/VC/Auxiliary/Build/vcvarsall.bat",
+            Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
+            / "Microsoft Visual Studio/2022/BuildTools/VC/Auxiliary/Build/vcvarsall.bat",
+        ]
+    )
     script = next((path for path in candidates if path.is_file()), None)
     if script is None:
-        raise ConfigurationError("MSVC requested but Visual Studio 2022 vcvarsall.bat was not found")
+        raise ConfigurationError("MSVC requested but a Visual Studio C++ toolchain was not found")
     argument = {"x86_64": "x64", "x86": "x86", "arm64": "arm64"}.get(architecture)
     if argument is None:
         raise ConfigurationError(f"Unsupported MSVC architecture: {architecture}")
