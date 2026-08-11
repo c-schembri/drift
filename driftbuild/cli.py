@@ -55,6 +55,9 @@ def _base_parser() -> argparse.ArgumentParser:
     build_parser = commands.add_parser("build", help="build default or named targets")
     build_parser.add_argument("targets", nargs="*")
     build_parser.set_defaults(handler=_build)
+    clean_parser = commands.add_parser("clean", help="remove outputs for default or named targets")
+    clean_parser.add_argument("targets", nargs="*")
+    clean_parser.set_defaults(handler=_clean)
     graph_parser = commands.add_parser("graph", help="print the validated target graph as JSON")
     graph_parser.set_defaults(handler=_graph)
     task_parser = commands.add_parser("task", help="run workflow tasks")
@@ -83,6 +86,12 @@ def _base_parser() -> argparse.ArgumentParser:
     provider_parser = commands.add_parser("command", help="run a provider-defined command")
     provider_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     provider_parser.set_defaults(handler=_provider_command)
+    generate_parser = commands.add_parser("generate", help="generate IDE integration files")
+    generators = generate_parser.add_subparsers(dest="generator", required=True)
+    visual_studio_parser = generators.add_parser("visual-studio", help="generate a Visual Studio solution")
+    visual_studio_parser.add_argument("--output", type=Path)
+    visual_studio_parser.add_argument("--startup-target")
+    visual_studio_parser.set_defaults(handler=_generate_visual_studio)
     return parser
 
 
@@ -98,6 +107,39 @@ def _build(arguments: argparse.Namespace, project: ProjectSpec, root: Path, conf
     from driftbuild.build import build
 
     build(project, root, root / ".drift", config, tuple(arguments.targets))
+    return 0
+
+
+def _clean(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.build import clean
+
+    clean(project, root, root / ".drift", config, tuple(arguments.targets))
+    return 0
+
+
+def _generate_visual_studio(
+    arguments: argparse.Namespace, _project: ProjectSpec, root: Path, config: BuildConfig
+) -> int:
+    from driftbuild.project import project_load
+    from driftbuild.visual_studio import generate
+
+    projects = {
+        build_type: project_load(
+            root,
+            BuildConfig("win32", config.architecture, "msvc", build_type, config.values),
+        )
+        for build_type in ("debug", "release")
+    }
+    output_root = arguments.output.resolve() if arguments.output else root / ".drift" / "visual-studio"
+    result = generate(
+        projects,
+        root,
+        output_root,
+        config.architecture,
+        arguments.startup_target,
+        config.values,
+    )
+    print(result.solution)
     return 0
 
 

@@ -50,6 +50,8 @@ Ninja 1.13.1 is downloaded from its official GitHub release, checked against a p
 
 - `drift configure` validates the declaration and writes `build.ninja` and `compile_commands.json`.
 - `drift build [targets...]` incrementally builds default or selected targets.
+- `drift clean [targets...]` removes default or selected target outputs through Ninja.
+- `drift generate visual-studio` writes a solution and Makefile-style projects under `.drift/visual-studio`.
 - `drift graph` prints the validated target graph.
 - `drift task [names...]` executes dependency-aware workflows with retries and resource locks.
 - `drift test`, `drift benchmark`, and `drift artifact` run their typed declarations.
@@ -57,7 +59,7 @@ Ninja 1.13.1 is downloaded from its official GitHub release, checked against a p
 - `drift remote NAME -- COMMAND...` uses the system SSH client for explicit remote work.
 - `drift command PATH...` invokes sync or async provider-defined commands with typed options.
 
-See [the architecture](docs/architecture.md), [API reference](docs/api.md), [migration guide](docs/migration.md), and [native fixture](examples/native) for the contracts behind those commands.
+See [the architecture](docs/architecture.md), [API reference](docs/api.md), [Visual Studio guide](docs/visual-studio.md), [migration guide](docs/migration.md), and [native fixture](examples/native) for the contracts behind those commands.
 
 ## Development
 

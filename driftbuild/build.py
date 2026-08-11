@@ -51,3 +51,14 @@ def build(
     arguments.extend(targets)
     run(arguments, cwd=result.generated.ninja_file.parent, environment=result.toolchain.environment)
     return result
+
+
+def clean(
+    project: ProjectSpec, root: Path, state_root: Path, config: BuildConfig, targets: tuple[str, ...] = ()
+) -> BuildResult:
+    """Configure and remove outputs for selected targets with pinned Ninja."""
+    result = configure(project, root, state_root, config)
+    ninja = ninja_resolve(state_root)
+    arguments = [str(ninja), "-f", result.generated.ninja_file.name, "-t", "clean", *targets]
+    run(arguments, cwd=result.generated.ninja_file.parent, environment=result.toolchain.environment)
+    return result
