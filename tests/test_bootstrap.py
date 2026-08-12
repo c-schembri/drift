@@ -16,3 +16,10 @@ def test_cmake_override_avoids_bootstrap(tmp_path: Path) -> None:
     executable.touch()
 
     assert bootstrap.cmake_resolve(tmp_path / "state", str(executable)) == executable.resolve()
+
+
+def test_meson_override_avoids_bootstrap(tmp_path: Path) -> None:
+    executable = tmp_path / "meson"
+    executable.touch()
+
+    assert bootstrap.meson_command(tmp_path / "state", str(executable)) == (str(executable.resolve()),)

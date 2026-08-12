@@ -2,7 +2,9 @@
 
 Drift is a typed Python project platform with a fast, deterministic Ninja build backend. It replaces sprawling project scripts with one immutable declaration that can describe native targets, workflows, tests, benchmarks, artifacts, releases, GitHub publication, and explicit remote operations.
 
-Drift 0.1 is experimental. It supports Python 3.12, Windows with MSVC, and Linux with GCC or Clang. It intentionally does not resolve third-party packages: providers model prebuilt dependencies and retain control over how those files arrive.
+Drift 0.1 is experimental. It supports Python 3.12, Windows with MSVC, and Linux and macOS with GCC or Clang.
+Pinned Git and archive packages can be imported through Drift, Conan, CMake, Meson, MSBuild, or Autotools build
+descriptions. Installed system interfaces can be imported explicitly through pkg-config.
 
 ## Quick start
 
@@ -47,7 +49,7 @@ py -3.12 drift.py test path/to/project
 
 After installing Drift as a command, use `drift build` inside a project or `drift build path/to/project` from elsewhere. `--root` remains available for scripts that prefer an explicit option.
 
-Ninja 1.13.1 and CMake 3.31.6 are downloaded on demand from their official releases, checked against pinned SHA-256 digests, and stored under `.drift/tools`. CMake is fetched only when a dependency requires its adapter. Set `DRIFT_NINJA` or `DRIFT_CMAKE` to use explicitly managed executables instead.
+Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, and Conan 2.31.2 are managed on demand under `DRIFT_HOME/tools`; only tools required by the selected dependency adapters are fetched, and each version is installed once per machine. Native archives and the Meson wheel are checked against pinned SHA-256 digests, while Conan is installed with an exact isolated package set. `DRIFT_NINJA`, `DRIFT_CMAKE`, `DRIFT_MESON`, and `DRIFT_CONAN` select explicitly managed executables. Autotools uses the host `sh` and `make`; pkg-config uses host `pkg-config` or `pkgconf`.
 
 ## Commands
 

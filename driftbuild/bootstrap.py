@@ -3,21 +3,75 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import platform
+import shlex
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import urllib.request
+import venv
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path, PurePosixPath
 
 from driftbuild.errors import ConfigurationError
+from driftbuild.storage import tool_store_root
 
 NINJA_VERSION = "1.13.1"
 CMAKE_VERSION = "3.31.6"
+MESON_VERSION = "1.12.0"
+CONAN_VERSION = "2.31.2"
+
+_MESON_WHEEL = (
+    "https://files.pythonhosted.org/packages/07/68/"
+    "b0117422eb0a46d9d8d9e328f0c5b5c835179bfc058688bca35c90c89eba/meson-1.12.0-py3-none-any.whl"
+)
+_MESON_WHEEL_SHA256 = "71f133147fa0fcfe8f4df49fa1045771064947834538409e5d97b3613aac8b4e"
+_MESON_ENTRY_SHA256 = "a4c127505025b493916c4c8b8dee6a12c0fae5380f6eb8a7ccf0e39ca6f4750e"
+_MESON_LAUNCHER = "import sys\nfrom mesonbuild.mesonmain import main\nsys.exit(main())\n"
+
+_CONAN_PACKAGES = (
+    f"conan=={CONAN_VERSION}",
+    "requests==2.34.2",
+    "urllib3==2.7.0",
+    "colorama==0.4.6",
+    "PyYAML==6.0.3",
+    "patch-ng==1.19.1",
+    "fasteners==0.20",
+    "Jinja2==3.1.6",
+    "python-dateutil==2.9.0.post0",
+    "distro==1.9.0",
+    "certifi==2026.7.22",
+    "charset-normalizer==3.4.9",
+    "idna==3.18",
+    "MarkupSafe==3.0.3",
+    "six==1.17.0",
+)
+_CONAN_INSTALL_MARKER = f"{CONAN_VERSION}:1"
+
+
+def _meson_wrapper_write(install: Path) -> Path:
+    launcher = install / "drift-meson.py"
+    wrapper = install / ("meson.cmd" if os.name == "nt" else "meson")
+    if os.name == "nt":
+        content = f'@"{Path(sys.executable).resolve()}" "{launcher.resolve()}" %*\r\n'
+    else:
+        content = (
+            f"#!/bin/sh\nexec {shlex.quote(str(Path(sys.executable).resolve()))} "
+            f'{shlex.quote(str(launcher.resolve()))} "$@"\n'
+        )
+    encoded = content.encode("ascii")
+    if not wrapper.is_file() or wrapper.read_bytes() != encoded:
+        wrapper.write_bytes(encoded)
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    return wrapper
 
 
 @dataclass(frozen=True)
@@ -122,6 +176,30 @@ def _host_key() -> tuple[str, str]:
     return operating_system, architecture
 
 
+@contextmanager
+def _exclusive_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as stream:
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            unlock = partial(msvcrt.locking, stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl = importlib.import_module("fcntl")
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            unlock = partial(fcntl.flock, stream.fileno(), fcntl.LOCK_UN)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            unlock()
+
+
 def _archive_extract(archive: Path, destination: Path) -> None:
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as bundle:
@@ -139,7 +217,7 @@ def _archive_extract(archive: Path, destination: Path) -> None:
 
 
 def _tool_resolve(
-    state_root: Path,
+    _state_root: Path,
     tool: str,
     version: str,
     release_url: str,
@@ -157,7 +235,7 @@ def _tool_resolve(
     description = archives.get(host)
     if description is None:
         raise ConfigurationError(f"Pinned {tool} {version} is unavailable for {host[0]} {host[1]}")
-    install = state_root / "tools" / tool / version
+    install = tool_store_root() / tool / version
     executable = install / description.executable
     if executable.is_file():
         actual = hashlib.sha256(executable.read_bytes()).hexdigest()
@@ -219,3 +297,114 @@ def cmake_resolve(state_root: Path, override: str | None = None) -> Path:
         _CMAKE_ARCHIVES,
         override,
     )
+
+
+def meson_command(_state_root: Path, override: str | None = None) -> tuple[str, ...]:
+    """Return a command for the verified, pinned Meson Python wheel."""
+    selected = override or os.environ.get("DRIFT_MESON")
+    if selected:
+        executable = Path(selected).expanduser().resolve()
+        if not executable.is_file():
+            raise ConfigurationError(f"DRIFT_MESON does not name a file: {executable}")
+        return (str(executable),)
+
+    install = tool_store_root() / "meson" / MESON_VERSION
+    entry = install / "mesonbuild" / "mesonmain.py"
+    launcher = install / "drift-meson.py"
+    wrapper = install / ("meson.cmd" if os.name == "nt" else "meson")
+    if entry.is_file() and launcher.is_file():
+        actual = hashlib.sha256(entry.read_bytes()).hexdigest()
+        if actual != _MESON_ENTRY_SHA256:
+            raise ConfigurationError(f"Cached Meson checksum mismatch at {entry}; remove it and retry")
+        if not wrapper.is_file():
+            _meson_wrapper_write(install)
+        return (os.fspath(Path(sys.executable).resolve()), os.fspath(launcher))
+
+    install.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="drift-meson-", dir=install.parent) as temporary:
+        temporary_path = Path(temporary)
+        wheel = temporary_path / f"meson-{MESON_VERSION}.whl"
+        try:
+            with urllib.request.urlopen(_MESON_WHEEL, timeout=120) as response:
+                with wheel.open("wb") as output:
+                    shutil.copyfileobj(response, output)
+        except OSError as error:
+            raise ConfigurationError(f"Cannot download pinned Meson {MESON_VERSION}: {error}") from error
+        actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        if actual != _MESON_WHEEL_SHA256:
+            raise ConfigurationError(
+                f"Meson wheel checksum mismatch: expected {_MESON_WHEEL_SHA256}, got {actual}"
+            )
+        unpacked = temporary_path / "unpacked"
+        _archive_extract(wheel, unpacked)
+        (unpacked / "drift-meson.py").write_text(_MESON_LAUNCHER, encoding="ascii")
+        try:
+            os.replace(unpacked, install)
+        except FileExistsError:
+            pass
+    _meson_wrapper_write(install)
+    return (os.fspath(Path(sys.executable).resolve()), os.fspath(launcher))
+
+
+def meson_resolve(state_root: Path, override: str | None = None) -> Path:
+    """Return an executable wrapper for the managed Meson wheel."""
+    command = meson_command(state_root, override)
+    if len(command) == 1:
+        return Path(command[0])
+    return tool_store_root() / "meson" / MESON_VERSION / ("meson.cmd" if os.name == "nt" else "meson")
+
+
+def conan_resolve(_state_root: Path, override: str | None = None) -> Path:
+    """Return the pinned Conan CLI from an isolated managed environment."""
+    selected = override or os.environ.get("DRIFT_CONAN")
+    if selected:
+        executable = Path(selected).expanduser().resolve()
+        if not executable.is_file():
+            raise ConfigurationError(f"DRIFT_CONAN does not name a file: {executable}")
+        return executable
+
+    install = tool_store_root() / "conan" / CONAN_VERSION
+    executable = install / ("Scripts/conan.exe" if os.name == "nt" else "bin/conan")
+    marker = install / ".drift-version"
+    if executable.is_file() and marker.is_file() and marker.read_text(encoding="ascii").strip() == _CONAN_INSTALL_MARKER:
+        return executable
+
+    install.parent.mkdir(parents=True, exist_ok=True)
+    with _exclusive_lock(install.parent / f".{CONAN_VERSION}.lock"):
+        if (
+            executable.is_file()
+            and marker.is_file()
+            and marker.read_text(encoding="ascii").strip() == _CONAN_INSTALL_MARKER
+        ):
+            return executable
+        try:
+            install.resolve().relative_to((tool_store_root() / "conan").resolve())
+        except ValueError as error:
+            raise ConfigurationError(f"Unsafe managed Conan installation path: {install}") from error
+        if install.exists():
+            shutil.rmtree(install)
+        try:
+            venv.EnvBuilder(with_pip=True, clear=True).create(install)
+        except OSError as error:
+            raise ConfigurationError(f"Cannot create the managed Conan environment: {error}") from error
+        python = install / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        from driftbuild.process import run
+
+        run(
+            (
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-deps",
+                "--only-binary=:all:",
+                *_CONAN_PACKAGES,
+            ),
+            capture=True,
+            timeout_seconds=300,
+        )
+        marker.write_text(_CONAN_INSTALL_MARKER + "\n", encoding="ascii")
+    if not executable.is_file():
+        raise ConfigurationError(f"Pinned Conan installation did not produce {executable}")
+    return executable

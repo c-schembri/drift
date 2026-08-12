@@ -188,6 +188,14 @@ class ProjectApi:
 
     prebuilt_library = dependency
 
+    def pkg_config(self, name: str, *, static: bool = False) -> Dependency:
+        """Import an installed dependency interface through pkg-config."""
+        if not name or any(character.isspace() for character in name):
+            raise ConfigurationError(f"Invalid pkg-config package name: {name!r}")
+        from driftbuild.pkgconfig import dependency_resolve
+
+        return dependency_resolve(name, static=static)
+
     def archive(self, url: str, sha256: str, *, strip_prefix: str | None = None) -> ArchiveSource:
         """Declare an archive source pinned by a lowercase SHA-256 digest."""
         parsed = urllib.parse.urlparse(url)

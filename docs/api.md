@@ -19,11 +19,11 @@ support = api.static_library(
 app = api.executable("app", sources=api.files("src/main.cpp"), dependencies=(api.private(support),))
 ```
 
-Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it.
+Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it. `api.pkg_config(name, static=False)` resolves the equivalent interface from a host-installed `.pc` package.
 
 `api.package(...)` declares a locked source package separately from its eventual compile/link interface. Sources are exact
 `api.archive(url, sha256, strip_prefix=...)` or `api.git(url, revision)` values. Drift detects an upstream Drift provider,
-Visual C++ project, or CMake codemodel from the materialized source. Pass the returned package directly to
+Visual C++ project, CMake or Meson introspection graph, Autotools install, or Conan recipe from the materialized source. Pass the returned package directly to
 `api.public(...)` or `api.private(...)` to use its imported default library. Use `package.target("name")` only to select
 another exported target explicitly. See the [package guide](packages.md) for locking and current limitations.
 

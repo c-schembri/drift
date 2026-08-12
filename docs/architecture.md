@@ -12,12 +12,29 @@ Drift separates project policy from execution in seven stages:
 
 ## State and reproducibility
 
-Project-generated state lives in `.drift`. Verified package sources live in a shared content-addressed store under `DRIFT_HOME/store`, the platform cache directory when `DRIFT_HOME` is unset. Configuration directories are keyed by platform, architecture, compiler selection, and build type. File discovery is sorted, root-confined, excludes symlinks, and rejects case collisions. Generated files are replaced only when their bytes change, preserving no-op performance.
+Project-generated state lives in `.drift`. Verified package sources live under `DRIFT_HOME/store`, and managed tools live
+under `DRIFT_HOME/tools`; both use the platform cache directory when `DRIFT_HOME` is unset. Configuration directories
+are keyed by platform, architecture, compiler selection, and build type. File discovery is sorted, root-confined,
+excludes symlinks, and rejects case collisions. Generated files are replaced only when their bytes change, preserving
+no-op performance.
 
-The runtime uses only the Python standard library. Build-system adapters bootstrap pinned, checksum-verified tools on demand; Ninja and CMake versions and archive digests are fixed in `bootstrap.py`. Compiler discovery is host-only in v0.
+The runtime uses only the Python standard library. Build-system adapters bootstrap pinned tools on demand. Ninja and
+CMake archives and the Meson wheel have fixed content digests; Conan runs from an isolated environment containing an
+exact package set. Compiler discovery is host-only in v0. Autotools and pkg-config intentionally inspect host tools and
+are therefore host integrations rather than hermetic package formats.
 
 ## Boundaries
 
 The build graph owns source/header selection, compile and link interfaces, object/static/shared/executable targets, custom actions, external libraries, aliases, runtime bundles, and locked package target references. The workflow graph separately owns operational tasks. Tests, benchmarks, artifacts, releases, GitHub, and remotes are typed services referencing those declarations.
 
-Drift v0 package support intentionally has no registry, version solver, transitive package graph, or binary package format. A package must be pinned to an exact Git commit or archive digest and expose a native Drift project, a recognized upstream build description, or a trusted local overlay. Adapter selection depends on the available manifests and host configuration, never on a package name. The MSBuild adapter translates a checked-in Visual C++ project-reference closure directly into Drift. The CMake adapter configures an immutable source tree out of tree, reads the File API codemodel, caches it by source and configuration, and represents upstream build targets as explicit actions. Visual Studio generation emits Makefile-style projects backed by Drift and Ninja rather than a second MSBuild backend. Remote execution never occurs implicitly during a local build.
+Drift's native source package layer intentionally has no registry or version solver. A package must be pinned to an exact
+Git commit or archive digest and expose a native Drift project, a recognized upstream build description, or a trusted
+local overlay. Adapter selection depends on manifests and host configuration, never on a package name. Conan recipes
+may resolve their own transitive package graph and binary variants inside Conan's isolated cache.
+
+The MSBuild adapter translates a checked-in Visual C++ project-reference closure directly into Drift. CMake and Meson
+are configured out of tree and queried through their supported introspection formats. Autotools projects with a
+generated `configure` script are installed into a private prefix behind one explicit action. Conan recipes are created
+once, then their packaged C/C++ interface is deployed into project state. pkg-config is an explicit provider API for
+host-installed interfaces. Visual Studio generation emits Makefile-style projects backed by Drift and Ninja rather than
+a second MSBuild backend. Remote execution never occurs implicitly during a local build.

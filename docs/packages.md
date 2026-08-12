@@ -44,13 +44,29 @@ sdl = api.package(
 )
 ```
 
-Drift chooses adapters from repository manifests and the selected host configuration, not from the package name. On
-Windows it can translate a matching Visual C++ project and its references directly into the Ninja graph. For portable
-CMake projects it configures once out of tree, reads the CMake File API codemodel, and caches the normalized graph. CMake
-builds remain behind explicit Ninja action edges, so no-op Drift builds do not rerun them.
+Drift chooses adapters from repository manifests and the selected host configuration, not from the package name:
 
-The CMake adapter uses Drift's pinned, checksum-verified CMake distribution. Consumers do not need to install CMake or
-Ninja separately. Adapter tools are downloaded on demand and cached under `.drift/tools`.
+- A `conanfile.py` is created and its packaged C/C++ interface is imported.
+- On Windows, a matching Visual C++ project and its reference closure can be translated directly.
+- CMake is configured once and queried through its File API codemodel.
+- Meson is configured once and queried through `meson-info`; its generated Ninja graph performs the package build.
+- A generated Autotools `configure` script is configured out of tree and built into a private install prefix.
+
+Imported builds remain behind explicit Ninja action edges, so no-op Drift builds do not rerun them. `conanfile.txt` is
+a consumer manifest rather than a package recipe and is not treated as a build description.
+
+Drift manages pinned Ninja, CMake, Meson, and Conan tools on demand under `DRIFT_HOME/tools`, shared by all projects.
+Consumers do not install them separately.
+Autotools currently requires host `sh` and `make` and is supported on POSIX hosts.
+
+Host-installed libraries can be declared explicitly through pkg-config:
+
+```python
+sdl = api.pkg_config("sdl3")
+app = api.executable("app", sources=api.files("main.c"), dependencies=(sdl,))
+```
+
+This interface reflects the host and is intentionally not recorded as a source package in `drift.lock`.
 
 When a repository exports several unrelated libraries and no default can be inferred, select one explicitly with
 `package.target("upstream-target")`. `build=api.msbuild(...)` remains an escape hatch for ambiguous Visual C++ trees;
@@ -95,5 +111,5 @@ to hold generated Ninja files and configuration-specific outputs.
 - Package providers and build-system adapters run only after locked content is materialized. CMake configuration writes
   only beneath the consuming project's `.drift/imports` directory. Local overlays remain available when an upstream
   cannot be described by a supported adapter.
-- The first package format supports a flat set of source packages. Transitive package declarations, registries, version
-  constraints, and prebuilt package variants are not supported yet; Drift reports these cases rather than guessing.
+- Drift source packages remain a flat, explicitly pinned set. Conan recipes may independently resolve transitive
+  dependencies and binary variants; Drift does not duplicate Conan's solver or registry.

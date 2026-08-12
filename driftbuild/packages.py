@@ -39,6 +39,7 @@ from driftbuild.model import (
 )
 from driftbuild.process import run
 from driftbuild.project import ProjectApi, project_load
+from driftbuild.storage import drift_home
 
 LOCK_VERSION = 1
 _MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
@@ -66,15 +67,7 @@ class PackageLock:
 
 def package_store_root() -> Path:
     """Return the shared Drift content store location."""
-    override = os.environ.get("DRIFT_HOME")
-    if override:
-        return Path(override).expanduser().resolve() / "store"
-    if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            return Path(local) / "drift" / "store"
-    cache = os.environ.get("XDG_CACHE_HOME")
-    return (Path(cache) if cache else Path.home() / ".cache") / "drift" / "store"
+    return drift_home() / "store"
 
 
 def _source_payload(source: ArchiveSource | GitSource) -> dict[str, str | None]:
@@ -730,7 +723,14 @@ def packages_compose(
         else:
             from driftbuild.importers import project_import
 
-            dependency_project = project_import(package_root, import_root, config, package.name, package.build)
+            dependency_project = project_import(
+                package_root,
+                import_root,
+                config,
+                package.name,
+                package.build,
+                offline=offline,
+            )
             allow_external = True
         targets = _package_project_transform(
             package,

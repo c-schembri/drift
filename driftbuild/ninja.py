@@ -138,6 +138,31 @@ def _compile_flags(
     return [*flags, *arguments]
 
 
+def _dependency_action_outputs(
+    target: TargetSpec,
+    targets: Mapping[str, TargetSpec],
+    outputs: Mapping[str, tuple[Path, ...]],
+) -> list[Path]:
+    result: list[Path] = []
+    visited: set[str] = set()
+
+    def add(name: str) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        dependency = targets[name]
+        if dependency.action is not None:
+            result.extend(outputs[name])
+        for nested in dependency.dependencies:
+            if isinstance(nested, TargetDependency):
+                add(_dependency_target_name(nested))
+
+    for dependency in target.dependencies:
+        if isinstance(dependency, TargetDependency):
+            add(_dependency_target_name(dependency))
+    return list(dict.fromkeys(result))
+
+
 def _link_inputs(
     target: TargetSpec,
     targets: Mapping[str, TargetSpec],
@@ -148,6 +173,12 @@ def _link_inputs(
     paths: list[Path] = []
     arguments = list(target.link_arguments)
     visited: set[str] = set()
+
+    def link_library(path: Path) -> bool:
+        if toolchain.family == "msvc":
+            return path.suffix.casefold() == ".lib"
+        name = path.name.casefold()
+        return path.suffix.casefold() in (".a", ".so", ".dylib") or ".so." in name
 
     def library_argument(value: str | Path) -> str:
         return str(root / value) if isinstance(value, Path) else value
@@ -162,9 +193,8 @@ def _link_inputs(
             if toolchain.family == "msvc" and child.kind == "shared_library":
                 paths.extend(path for path in candidates if path.suffix == ".lib")
             elif child.kind == "external_library":
-                suffixes = {".lib"} if toolchain.family == "msvc" else {".a", ".so", ".dylib"}
-                libraries = tuple(path for path in candidates if path.suffix in suffixes)
-                paths.extend(libraries or candidates)
+                libraries = tuple(path for path in candidates if link_library(path))
+                paths.extend(libraries)
             else:
                 paths.extend(candidates)
         for nested in child.dependencies:
@@ -284,7 +314,13 @@ def generate(
                     *flags,
                 ]
             command = _shell(arguments)
-            lines += [f"build {_ninja(object_path)}: cc {_ninja(source_path)}", f"  command = {command}", ""]
+            order_inputs = _dependency_action_outputs(target, targets, outputs)
+            order_text = f" || {' '.join(_ninja(path) for path in order_inputs)}" if order_inputs else ""
+            lines += [
+                f"build {_ninja(object_path)}: cc {_ninja(source_path)}{order_text}",
+                f"  command = {command}",
+                "",
+            ]
             objects.append(object_path)
             output_phases[object_path] = "compile"
             compdb.append(
@@ -359,6 +395,10 @@ def generate(
             continue
         link_paths, link_arguments = _link_inputs(target, targets, outputs, root, toolchain)
         inputs = [*object_outputs[target.name], *link_paths]
+        order_inputs = [
+            path for path in _dependency_action_outputs(target, targets, outputs) if path not in inputs
+        ]
+        order_text = f" || {' '.join(_ninja(path) for path in order_inputs)}" if order_inputs else ""
         output = outputs[target.name][0]
         output.parent.mkdir(parents=True, exist_ok=True)
         if target.kind == "static_library":
@@ -382,7 +422,8 @@ def generate(
         output_phases.update((path, rule) for path in outputs[target.name])
         command_variable = "tool_command" if toolchain.family == "msvc" else "command"
         lines += [
-            f"build {' '.join(_ninja(path) for path in outputs[target.name])}: {rule} {' '.join(_ninja(path) for path in inputs)}",
+            f"build {' '.join(_ninja(path) for path in outputs[target.name])}: {rule} "
+            f"{' '.join(_ninja(path) for path in inputs)}{order_text}",
             f"  {command_variable} = {_shell(arguments)}",
         ]
         if toolchain.family == "msvc":

@@ -14,12 +14,19 @@ def project_import(
     config: BuildConfig,
     package_name: str,
     build: PackageBuild | None,
+    *,
+    offline: bool = False,
 ) -> ProjectSpec:
     """Select a build-system adapter and return its normalized target graph."""
     if isinstance(build, MsbuildProject):
         from driftbuild.msbuild import project_import as msbuild_import
 
         return msbuild_import(source_root, config, build)
+
+    if (source_root / "conanfile.py").is_file():
+        from driftbuild.conan import project_import as conan_import
+
+        return conan_import(source_root, state_root, config, package_name, offline=offline)
 
     if config.platform == "win32":
         from driftbuild.msbuild import project_discover
@@ -33,11 +40,21 @@ def project_import(
 
         return cmake_import(source_root, state_root, config, package_name)
 
-    mechanisms: list[str] = []
     if (source_root / "meson.build").is_file():
-        mechanisms.append("Meson")
-    if (source_root / "conanfile.py").is_file() or (source_root / "conanfile.txt").is_file():
-        mechanisms.append("Conan")
+        from driftbuild.meson import project_import as meson_import
+
+        return meson_import(source_root, state_root, config, package_name)
+
+    if (source_root / "configure").is_file():
+        from driftbuild.autotools import project_import as autotools_import
+
+        return autotools_import(source_root, state_root, config, package_name)
+
+    mechanisms: list[str] = []
+    if (source_root / "configure.ac").is_file():
+        mechanisms.append("Autotools without a generated configure script")
+    if (source_root / "conanfile.txt").is_file():
+        mechanisms.append("a consumer-only Conan manifest")
     if (source_root / "vcpkg.json").is_file():
         mechanisms.append("vcpkg")
     detail = f" (detected {', '.join(mechanisms)})" if mechanisms else ""

@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-from driftbuild.api import BuildConfig, PoolSpec, ProjectApi
+from driftbuild.api import ActionSpec, BuildConfig, PoolSpec, ProjectApi, ProjectSpec, TargetRef
+from driftbuild.model import TargetDependency, TargetSpec
 from driftbuild.ninja import generate
 from driftbuild.toolchain import Toolchain
 
@@ -102,3 +103,32 @@ def test_objective_c_source_is_compiled_with_c_compiler(tmp_path: Path) -> None:
 
     assert database[0]["command"].startswith("clang ")
     assert database[0]["file"].endswith("window.m")
+
+
+def test_external_action_orders_consumer_compilation_without_linking_stamp(tmp_path: Path) -> None:
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    stamp = tmp_path / "installed.stamp"
+    package = TargetSpec(
+        "package",
+        "external_library",
+        outputs=(stamp,),
+        action=ActionSpec(("install-package",), (stamp,)),
+    )
+    app = TargetSpec(
+        "app",
+        "executable",
+        sources=(Path("main.c"),),
+        dependencies=(TargetDependency(TargetRef("package"), "private"),),
+    )
+    project = ProjectSpec("fixture", (package, app), (TargetRef("app"),))
+    config = BuildConfig("linux", compiler="gcc")
+    toolchain = Toolchain("gcc", "gcc", "g++", "g++", "ar", {}, ".o", "", "lib", ".a", "lib", ".so")
+
+    generated = generate(project, tmp_path, tmp_path / ".drift", config, toolchain)
+    ninja = generated.ninja_file.read_text(encoding="utf-8")
+    compile_edge = next(line for line in ninja.splitlines() if ": cc " in line)
+    link_edge = next(line for line in ninja.splitlines() if ": link " in line)
+
+    assert "|| " in compile_edge and stamp.name in compile_edge
+    assert "|| " in link_edge and stamp.name in link_edge
+    assert str(stamp) not in next(line for line in ninja.splitlines() if line.startswith("  command = g++"))
