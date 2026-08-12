@@ -3,7 +3,7 @@
 Drift can project a native target graph into a Visual Studio solution while retaining Ninja as the only build backend:
 
 ```console
-drift generate visual-studio
+drift generate visual-studio [project-directory]
 ```
 
 The default output is `.drift/visual-studio/<project>.sln`. Use `--output PATH` to select another directory and `--startup-target NAME` to place a specific executable first in the solution.

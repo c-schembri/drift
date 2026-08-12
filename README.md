@@ -36,13 +36,14 @@ def project(api: ProjectApi):
     return api.project("hello", defaults=(app,))
 ```
 
-Install and use it:
+Run this checkout directly with Python 3.12; Drift has no third-party runtime dependencies:
 
 ```console
-uv tool install drift-build
-drift build
-drift test
+py -3.12 drift.py build path/to/project
+py -3.12 drift.py test path/to/project
 ```
+
+After installing Drift as a command, use `drift build` inside a project or `drift build path/to/project` from elsewhere. `--root` remains available for scripts that prefer an explicit option.
 
 Ninja 1.13.1 is downloaded from its official GitHub release, checked against a pinned SHA-256 digest, and stored under `.drift/tools`. Set `DRIFT_NINJA` to use an explicitly managed executable instead.
 

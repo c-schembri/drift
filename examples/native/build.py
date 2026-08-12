@@ -19,8 +19,13 @@ def project(api: ProjectApi):
     )
     assets = api.runtime_bundle("assets", api.files("assets/message.txt"), destination="bin")
     all_targets = api.alias("all", (hello, assets))
-    executable = (
-        f".drift/build/{sys.platform}-{api.config.architecture}-{api.config.compiler}-{api.config.build_type}/bin/hello"
+    executable = str(
+        api.root
+        / ".drift"
+        / "build"
+        / f"{sys.platform}-{api.config.architecture}-{api.config.compiler}-{api.config.build_type}"
+        / "bin"
+        / "hello"
     )
     if sys.platform == "win32":
         executable += ".exe"

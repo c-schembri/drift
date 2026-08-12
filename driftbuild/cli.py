@@ -20,6 +20,36 @@ from driftbuild.model import Artifact, BuildConfig, CommandContext, CommandResul
 from driftbuild.project import project_load, project_root_find
 
 
+def _project_directory_normalize(arguments: list[str]) -> list[str]:
+    if "--root" in arguments or any(value.startswith("--root=") for value in arguments):
+        return arguments
+    operations = {
+        "artifact",
+        "benchmark",
+        "build",
+        "clean",
+        "configure",
+        "generate",
+        "graph",
+        "task",
+        "test",
+    }
+    operation_index = next((index for index, value in enumerate(arguments) if value in operations), None)
+    if operation_index is None:
+        return arguments
+    candidate_index = operation_index + 1
+    if arguments[operation_index] == "generate":
+        candidate_index += 1
+    if candidate_index >= len(arguments) or arguments[candidate_index].startswith("-"):
+        return arguments
+    candidate = Path(arguments[candidate_index]).resolve()
+    if not candidate.is_dir() or not (candidate / "drift.toml").is_file():
+        return arguments
+    normalized = list(arguments)
+    normalized.pop(candidate_index)
+    return ["--root", str(candidate), *normalized]
+
+
 def _configuration(arguments: argparse.Namespace) -> BuildConfig:
     values: dict[str, str] = {}
     for item in arguments.define:
@@ -281,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     """Run Drift and convert expected failures to concise diagnostics."""
     parser = _base_parser()
     try:
-        arguments = parser.parse_args(argv)
+        raw_arguments = list(sys.argv[1:] if argv is None else argv)
+        arguments = parser.parse_args(_project_directory_normalize(raw_arguments))
         root = _root(arguments)
         config = _configuration(arguments)
         project = project_load(root, config)

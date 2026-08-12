@@ -13,7 +13,12 @@ def test_native_fixture_build_test_and_compdb() -> None:
     command = [sys.executable, "-m", "driftbuild", "--root", str(fixture), "--compiler", compiler]
 
     build = subprocess.run(
-        [*command, "build"], cwd=fixture, env=environment, capture_output=True, text=True, check=False
+        [sys.executable, "-m", "driftbuild", "--compiler", compiler, "build", str(fixture)],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert build.returncode == 0, build.stdout + build.stderr
     test = subprocess.run(

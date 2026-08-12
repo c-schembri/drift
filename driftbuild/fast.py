@@ -49,7 +49,14 @@ def _no_op(arguments: list[str]) -> bool:
     if "build" not in arguments or any(item == "-D" or item.startswith(("-D", "--define")) for item in arguments):
         return False
     operation = arguments.index("build")
-    root = _root_find(arguments[:operation])
+    target_arguments = arguments[operation + 1 :]
+    directory = Path(target_arguments[0]).resolve() if target_arguments else None
+    root: Path | None
+    if directory is not None and directory.is_dir() and (directory / "drift.toml").is_file():
+        root = directory
+        target_arguments = target_arguments[1:]
+    else:
+        root = _root_find(arguments[:operation])
     if root is None:
         return False
     compiler = _value(arguments[:operation], "--compiler", "auto")
@@ -63,7 +70,7 @@ def _no_op(arguments: list[str]) -> bool:
     if not _inputs_current(build_root / "configured.json"):
         return False
     completed = subprocess.run(
-        [str(ninja), "-n", "-f", "build.ninja", *arguments[operation + 1 :]],
+        [str(ninja), "-n", "-f", "build.ninja", *target_arguments],
         cwd=build_root,
         capture_output=True,
         text=True,
