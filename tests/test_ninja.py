@@ -45,6 +45,26 @@ def test_msvc_shared_library_emits_runtime_and_import_library(tmp_path: Path) ->
     assert len(generated.outputs["sample"]) == 2
     assert "/DLL" in ninja
     assert "/IMPLIB:" in ninja
+    assert "rspfile = $response_file" in ninja
+    assert "rspfile_content = $in $link_arguments" in ninja
+    assert "sample-link.rsp" in ninja
+
+
+def test_msvc_static_library_places_inputs_in_response_file(tmp_path: Path) -> None:
+    (tmp_path / "first.c").write_text("int first(void) { return 1; }", encoding="utf-8")
+    (tmp_path / "second.c").write_text("int second(void) { return 2; }", encoding="utf-8")
+    api = ProjectApi(tmp_path, BuildConfig("win32", compiler="msvc"))
+    library = api.static_library("sample", sources=api.files("first.c", "second.c"))
+    project = api.project("fixture", defaults=(library,))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    generated = generate(project, tmp_path, tmp_path / ".drift", api.config, toolchain)
+    ninja = generated.ninja_file.read_text(encoding="utf-8")
+    archive_command = next(line for line in ninja.splitlines() if line.startswith("  tool_command = lib "))
+
+    assert "first.obj" not in archive_command
+    assert "second.obj" not in archive_command
+    assert "sample-archive.rsp" in ninja
 
 
 def test_custom_action_emits_pool_and_dependency_inputs(tmp_path: Path) -> None:

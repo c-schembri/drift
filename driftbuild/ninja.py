@@ -209,15 +209,33 @@ def generate(
             "  description = CC $out",
             "",
         ]
+    if toolchain.family == "msvc":
+        lines += [
+            "rule archive",
+            '  command = $tool_command "@$response_file"',
+            "  rspfile = $response_file",
+            "  rspfile_content = $in",
+            "  description = AR $out",
+            "",
+            "rule link",
+            '  command = $tool_command "@$response_file"',
+            "  rspfile = $response_file",
+            "  rspfile_content = $in $link_arguments",
+            "  description = LINK $out",
+            "",
+        ]
+    else:
+        lines += [
+            "rule archive",
+            "  command = $command",
+            "  description = AR $out",
+            "",
+            "rule link",
+            "  command = $command",
+            "  description = LINK $out",
+            "",
+        ]
     lines += [
-        "rule archive",
-        "  command = $command",
-        "  description = AR $out",
-        "",
-        "rule link",
-        "  command = $command",
-        "  description = LINK $out",
-        "",
         "rule action",
         "  command = $command",
         "  description = $description",
@@ -345,13 +363,13 @@ def generate(
         output.parent.mkdir(parents=True, exist_ok=True)
         if target.kind == "static_library":
             arguments = (
-                [toolchain.archiver, "/NOLOGO", f"/OUT:{output}", *map(str, inputs)]
+                [toolchain.archiver, "/NOLOGO", f"/OUT:{output}"]
                 if toolchain.family == "msvc"
                 else [toolchain.archiver, "rcs", str(output), *map(str, inputs)]
             )
             rule = "archive"
         elif toolchain.family == "msvc":
-            arguments = [toolchain.linker, "/NOLOGO", f"/OUT:{output}", *map(str, inputs), *link_arguments]
+            arguments = [toolchain.linker, "/NOLOGO", f"/OUT:{output}"]
             if target.kind == "shared_library":
                 arguments.append("/DLL")
                 arguments.append(f"/IMPLIB:{outputs[target.name][1]}")
@@ -362,11 +380,19 @@ def generate(
                 arguments.append("-shared")
             rule = "link"
         output_phases.update((path, rule) for path in outputs[target.name])
+        command_variable = "tool_command" if toolchain.family == "msvc" else "command"
         lines += [
             f"build {' '.join(_ninja(path) for path in outputs[target.name])}: {rule} {' '.join(_ninja(path) for path in inputs)}",
-            f"  command = {_shell(arguments)}",
-            "",
+            f"  {command_variable} = {_shell(arguments)}",
         ]
+        if toolchain.family == "msvc":
+            response_file = build_root / "rsp" / f"{target.name}-{rule}.rsp"
+            response_file.parent.mkdir(parents=True, exist_ok=True)
+            lines += [
+                f"  response_file = {_ninja(response_file)}",
+                f"  link_arguments = {_shell(link_arguments) if rule == 'link' else ''}",
+            ]
+        lines.append("")
 
     for target in project.targets:
         target_outputs = outputs[target.name]

@@ -69,7 +69,7 @@ Builds that execute work report wall-clock total, configure, and Ninja time. Com
 are accumulated job time, so they can exceed wall-clock time when Ninja runs work in parallel. No-op builds report
 their total validation time.
 
-See [the architecture](docs/architecture.md), [API reference](docs/api.md), [package guide](docs/packages.md), [Visual Studio guide](docs/visual-studio.md), [migration guide](docs/migration.md), and [native fixture](examples/native) for the contracts behind those commands.
+See [the architecture](docs/architecture.md), [API reference](docs/api.md), [package guide](docs/packages.md), [Visual Studio guide](docs/visual-studio.md), [migration guide](docs/migration.md), [native fixture](examples/native), and [SDL3 Win32 example](examples/sdl3-window) for the contracts behind those commands.
 
 ## Development
 
