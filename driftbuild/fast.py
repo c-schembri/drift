@@ -7,9 +7,27 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from driftbuild import __version__
+
+_OPERATIONS = {
+    "artifact",
+    "benchmark",
+    "build",
+    "clean",
+    "command",
+    "configure",
+    "generate",
+    "graph",
+    "release",
+    "remote",
+    "run",
+    "task",
+    "test",
+}
+_VALUE_OPTIONS = {"--root", "--compiler", "--architecture", "--build-type", "-D", "--define"}
 
 
 def _value(arguments: list[str], name: str, default: str) -> str:
@@ -45,10 +63,32 @@ def _inputs_current(path: Path) -> bool:
         return False
 
 
+def _operation_find(arguments: list[str]) -> tuple[str, int] | None:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in _OPERATIONS:
+            return argument, index
+        if argument in _VALUE_OPTIONS:
+            index += 2
+            continue
+        if argument.startswith(("--root=", "--compiler=", "--architecture=", "--build-type=", "--define=", "-D")):
+            index += 1
+            continue
+        if argument == "-v":
+            index += 1
+            continue
+        return None
+    return None
+
+
 def _no_op(arguments: list[str]) -> bool:
-    if "build" not in arguments or any(item == "-D" or item.startswith(("-D", "--define")) for item in arguments):
+    operation_found = _operation_find(arguments)
+    if operation_found is None or operation_found[0] != "build":
         return False
-    operation = arguments.index("build")
+    if any(item == "-D" or item.startswith(("-D", "--define")) for item in arguments):
+        return False
+    operation = operation_found[1]
     target_arguments = arguments[operation + 1 :]
     directory = Path(target_arguments[0]).resolve() if target_arguments else None
     root: Path | None
@@ -82,7 +122,9 @@ def _no_op(arguments: list[str]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Exit quickly for a proven no-op build, otherwise load the complete CLI."""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    started = time.perf_counter()
     if _no_op(arguments):
+        print(f"Build timing: total {time.perf_counter() - started:.3f}s | no work")
         return 0
     from driftbuild.cli import main as cli_main
 

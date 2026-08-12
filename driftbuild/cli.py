@@ -31,6 +31,7 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "configure",
         "generate",
         "graph",
+        "run",
         "task",
         "test",
     }
@@ -88,6 +89,9 @@ def _base_parser() -> argparse.ArgumentParser:
     clean_parser = commands.add_parser("clean", help="remove outputs for default or named targets")
     clean_parser.add_argument("targets", nargs="*")
     clean_parser.set_defaults(handler=_clean)
+    run_parser = commands.add_parser("run", help="build and run an executable target")
+    run_parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    run_parser.set_defaults(handler=_run)
     graph_parser = commands.add_parser("graph", help="print the validated target graph as JSON")
     graph_parser.set_defaults(handler=_graph)
     task_parser = commands.add_parser("task", help="run workflow tasks")
@@ -134,9 +138,11 @@ def _configure(arguments: argparse.Namespace, project: ProjectSpec, root: Path, 
 
 
 def _build(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
-    from driftbuild.build import build
+    from driftbuild.build import build, build_timing_render
 
-    build(project, root, root / ".drift", config, tuple(arguments.targets))
+    result = build(project, root, root / ".drift", config, tuple(arguments.targets))
+    assert result.timing is not None
+    print(build_timing_render(result.timing))
     return 0
 
 
@@ -145,6 +151,19 @@ def _clean(arguments: argparse.Namespace, project: ProjectSpec, root: Path, conf
 
     clean(project, root, root / ".drift", config, tuple(arguments.targets))
     return 0
+
+
+def _run(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.runner import build_and_run
+
+    values = list(arguments.arguments)
+    separator = values.index("--") if "--" in values else len(values)
+    selectors = values[:separator]
+    program_arguments = values[separator + 1 :] if separator < len(values) else ()
+    if len(selectors) > 1:
+        raise ExecutionError("Run accepts at most one target before --")
+    target = selectors[0] if selectors else None
+    return build_and_run(project, root, root / ".drift", config, target, program_arguments)
 
 
 def _generate_visual_studio(

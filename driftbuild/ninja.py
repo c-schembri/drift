@@ -24,6 +24,7 @@ class GeneratedBuild:
     ninja_file: Path
     compilation_database: Path
     outputs: Mapping[str, tuple[Path, ...]]
+    output_phases: Mapping[Path, str]
 
 
 def _ninja(value: str | Path) -> str:
@@ -233,6 +234,7 @@ def generate(
     ]
     compdb: list[dict[str, str]] = []
     object_outputs: dict[str, list[Path]] = {}
+    output_phases: dict[Path, str] = {}
     action_root = build_root / "actions"
 
     for target in project.targets:
@@ -261,6 +263,7 @@ def generate(
             command = _shell(arguments)
             lines += [f"build {_ninja(object_path)}: cc {_ninja(source_path)}", f"  command = {command}", ""]
             objects.append(object_path)
+            output_phases[object_path] = "compile"
             compdb.append(
                 {"directory": str(root), "file": str(source_path), "output": str(object_path), "command": command}
             )
@@ -299,6 +302,7 @@ def generate(
                 lines.insert(-1, f"  depfile = {_ninja(build_root / target.action.depfile)}")
             if target.action.pool is not None:
                 lines.insert(-1, f"  pool = {target.action.pool}")
+            output_phases.update((path, "action") for path in action_outputs)
 
         if target.kind == "runtime_bundle":
             bundle_files = [_source_path(root, value, outputs) for value in target.runtime_files]
@@ -319,6 +323,7 @@ def generate(
                 "  restat = 1",
                 "",
             ]
+            output_phases[output] = "action"
 
     for target in project.targets:
         if target.kind == "object_library":
@@ -351,6 +356,7 @@ def generate(
             if target.kind == "shared_library":
                 arguments.append("-shared")
             rule = "link"
+        output_phases.update((path, rule) for path in outputs[target.name])
         lines += [
             f"build {' '.join(_ninja(path) for path in outputs[target.name])}: {rule} {' '.join(_ninja(path) for path in inputs)}",
             f"  command = {_shell(arguments)}",
@@ -373,4 +379,4 @@ def generate(
     compilation_database = build_root / "compile_commands.json"
     _write_if_changed(ninja_file, "\n".join(lines))
     _write_if_changed(compilation_database, json.dumps(compdb, indent=2) + "\n")
-    return GeneratedBuild(ninja_file, compilation_database, outputs)
+    return GeneratedBuild(ninja_file, compilation_database, outputs, output_phases)

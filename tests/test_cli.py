@@ -21,6 +21,7 @@ def test_native_fixture_build_test_and_compdb() -> None:
         check=False,
     )
     assert build.returncode == 0, build.stdout + build.stderr
+    assert "Build timing: total " in build.stdout
     test = subprocess.run(
         [*command, "test", "hello"], cwd=fixture, env=environment, capture_output=True, text=True, check=False
     )
@@ -35,6 +36,17 @@ def test_native_fixture_build_test_and_compdb() -> None:
     )
     assert artifact.returncode == 0, artifact.stdout + artifact.stderr
     assert (fixture / ".drift" / "artifacts" / "hello.zip").is_file()
+
+    ran = subprocess.run(
+        [sys.executable, "-m", "driftbuild", "--compiler", compiler, "run", str(fixture)],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert "42" in ran.stdout
 
     generated = subprocess.run(
         [*command, "generate", "visual-studio", "--startup-target", "hello"],

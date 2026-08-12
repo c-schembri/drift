@@ -40,6 +40,7 @@ Run this checkout directly with Python 3.12; Drift has no third-party runtime de
 
 ```console
 py -3.12 drift.py build path/to/project
+py -3.12 drift.py run path/to/project
 py -3.12 drift.py test path/to/project
 ```
 
@@ -50,7 +51,8 @@ Ninja 1.13.1 is downloaded from its official GitHub release, checked against a p
 ## Commands
 
 - `drift configure` validates the declaration and writes `build.ninja` and `compile_commands.json`.
-- `drift build [targets...]` incrementally builds default or selected targets.
+- `drift build [targets...]` incrementally builds default or selected targets and reports build phase timings.
+- `drift run [project] [target] [-- arguments...]` builds and launches an executable target.
 - `drift clean [targets...]` removes default or selected target outputs through Ninja.
 - `drift generate visual-studio` writes a solution and Makefile-style projects under `.drift/visual-studio`.
 - `drift graph` prints the validated target graph.
@@ -59,6 +61,10 @@ Ninja 1.13.1 is downloaded from its official GitHub release, checked against a p
 - `drift release NAME` validates a release; `--publish` delegates publication to authenticated `gh`.
 - `drift remote NAME -- COMMAND...` uses the system SSH client for explicit remote work.
 - `drift command PATH...` invokes sync or async provider-defined commands with typed options.
+
+Builds that execute work report wall-clock total, configure, and Ninja time. Compile, archive, link, and action values
+are accumulated job time, so they can exceed wall-clock time when Ninja runs work in parallel. No-op builds report
+their total validation time.
 
 See [the architecture](docs/architecture.md), [API reference](docs/api.md), [Visual Studio guide](docs/visual-studio.md), [migration guide](docs/migration.md), and [native fixture](examples/native) for the contracts behind those commands.
 
