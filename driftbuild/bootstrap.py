@@ -185,8 +185,7 @@ def _exclusive_lock(path: Path) -> Iterator[None]:
             stream.flush()
         stream.seek(0)
         if os.name == "nt":
-            import msvcrt
-
+            msvcrt = importlib.import_module("msvcrt")
             msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
             unlock = partial(msvcrt.locking, stream.fileno(), msvcrt.LK_UNLCK, 1)
         else:
