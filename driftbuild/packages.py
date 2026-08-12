@@ -535,7 +535,13 @@ def _package_target_name(package: str, target: str) -> str:
     return f"__drift_package_{package}_{readable}_{digest}"
 
 
-def _package_path(package_root: Path, value: Path, extra_roots: tuple[Path, ...] = ()) -> Path:
+def _package_path(
+    package_root: Path,
+    value: Path,
+    extra_roots: tuple[Path, ...] = (),
+    *,
+    allow_external: bool = False,
+) -> Path:
     resolved = value.resolve() if value.is_absolute() else (package_root / value).resolve()
     for allowed in (package_root, *extra_roots):
         try:
@@ -543,6 +549,8 @@ def _package_path(package_root: Path, value: Path, extra_roots: tuple[Path, ...]
             return resolved
         except ValueError:
             continue
+    if allow_external and value.is_absolute():
+        return resolved
     raise ConfigurationError(f"Package path escapes its source and import roots: {value}")
 
 
@@ -555,31 +563,51 @@ def _package_output(package: str, value: Path, extra_roots: tuple[Path, ...]) ->
 
 
 def _input_rebase(
-    value: BuildInput, package_root: Path, names: dict[str, str], extra_roots: tuple[Path, ...]
+    value: BuildInput,
+    package_root: Path,
+    names: dict[str, str],
+    extra_roots: tuple[Path, ...],
+    allow_external: bool,
 ) -> BuildInput:
     if isinstance(value, Path):
-        return _package_path(package_root, value, extra_roots)
+        return _package_path(package_root, value, extra_roots, allow_external=allow_external)
     return Artifact(TargetRef(names[value.target.name]), value.path)
 
 
-def _dependency_rebase(dependency: Dependency, package_root: Path, extra_roots: tuple[Path, ...]) -> Dependency:
+def _dependency_rebase(
+    dependency: Dependency,
+    package_root: Path,
+    extra_roots: tuple[Path, ...],
+    allow_external: bool,
+) -> Dependency:
     libraries = tuple(
-        _package_path(package_root, value, extra_roots) if isinstance(value, Path) else value
+        _package_path(package_root, value, extra_roots, allow_external=allow_external)
+        if isinstance(value, Path)
+        else value
         for value in dependency.link.libraries
     )
     return Dependency(
         dependency.name,
         CompileInterface(
-            tuple(_package_path(package_root, value, extra_roots) for value in dependency.compile.include_dirs),
+            tuple(
+                _package_path(package_root, value, extra_roots, allow_external=allow_external)
+                for value in dependency.compile.include_dirs
+            ),
             dependency.compile.defines,
             dependency.compile.arguments,
         ),
         LinkInterface(
             libraries,
-            tuple(_package_path(package_root, value, extra_roots) for value in dependency.link.library_dirs),
+            tuple(
+                _package_path(package_root, value, extra_roots, allow_external=allow_external)
+                for value in dependency.link.library_dirs
+            ),
             dependency.link.arguments,
         ),
-        tuple(_package_path(package_root, value, extra_roots) for value in dependency.runtime_files),
+        tuple(
+            _package_path(package_root, value, extra_roots, allow_external=allow_external)
+            for value in dependency.runtime_files
+        ),
     )
 
 
@@ -588,6 +616,8 @@ def _package_project_transform(
     package_root: Path,
     project: ProjectSpec,
     extra_roots: tuple[Path, ...] = (),
+    *,
+    allow_external: bool = False,
 ) -> tuple[TargetSpec, ...]:
     if project.packages:
         raise ConfigurationError(f"Package {package.name} declares transitive packages; this is not supported yet")
@@ -609,7 +639,7 @@ def _package_project_transform(
         dependencies: list[Dependency | TargetDependency] = []
         for dependency in target.dependencies:
             if isinstance(dependency, Dependency):
-                dependencies.append(_dependency_rebase(dependency, package_root, extra_roots))
+                dependencies.append(_dependency_rebase(dependency, package_root, extra_roots, allow_external))
             elif isinstance(dependency.target, PackageTargetRef):
                 raise ConfigurationError(f"Package {package.name} target {target.name} uses a transitive package")
             else:
@@ -620,12 +650,16 @@ def _package_project_transform(
             action = replace(
                 action,
                 outputs=outputs,
-                inputs=tuple(_input_rebase(value, package_root, names, extra_roots) for value in action.inputs),
+                inputs=tuple(
+                    _input_rebase(value, package_root, names, extra_roots, allow_external) for value in action.inputs
+                ),
                 implicit_inputs=tuple(
-                    _input_rebase(value, package_root, names, extra_roots) for value in action.implicit_inputs
+                    _input_rebase(value, package_root, names, extra_roots, allow_external)
+                    for value in action.implicit_inputs
                 ),
                 order_only=tuple(
-                    _input_rebase(value, package_root, names, extra_roots) for value in action.order_only
+                    _input_rebase(value, package_root, names, extra_roots, allow_external)
+                    for value in action.order_only
                 ),
                 depfile=(
                     _package_output(package.name, action.depfile, extra_roots)
@@ -637,18 +671,26 @@ def _package_project_transform(
             replace(
                 target,
                 name=names[target.name],
-                sources=tuple(_input_rebase(value, package_root, names, extra_roots) for value in target.sources),
+                sources=tuple(
+                    _input_rebase(value, package_root, names, extra_roots, allow_external) for value in target.sources
+                ),
                 public_headers=tuple(
-                    _input_rebase(value, package_root, names, extra_roots) for value in target.public_headers
+                    _input_rebase(value, package_root, names, extra_roots, allow_external)
+                    for value in target.public_headers
                 ),
                 private_headers=tuple(
-                    _input_rebase(value, package_root, names, extra_roots) for value in target.private_headers
+                    _input_rebase(value, package_root, names, extra_roots, allow_external)
+                    for value in target.private_headers
                 ),
-                include_dirs=tuple(_package_path(package_root, value, extra_roots) for value in target.include_dirs),
+                include_dirs=tuple(
+                    _package_path(package_root, value, extra_roots, allow_external=allow_external)
+                    for value in target.include_dirs
+                ),
                 dependencies=tuple(dependencies),
                 objects=tuple(TargetRef(names[reference.name]) for reference in target.objects),
                 runtime_files=tuple(
-                    _input_rebase(value, package_root, names, extra_roots) for value in target.runtime_files
+                    _input_rebase(value, package_root, names, extra_roots, allow_external)
+                    for value in target.runtime_files
                 ),
                 outputs=outputs,
                 action=action,
@@ -680,6 +722,7 @@ def packages_compose(
     for package in sorted(project.packages, key=lambda item: item.name):
         package_root = package_roots[package.name]
         import_root = root / ".drift" / "imports"
+        allow_external = False
         if package.overlay is not None:
             dependency_project = _overlay_load(root / package.overlay, package_root, config, package.name)
         elif package.build is None and (package_root / "drift.toml").is_file():
@@ -688,7 +731,14 @@ def packages_compose(
             from driftbuild.importers import project_import
 
             dependency_project = project_import(package_root, import_root, config, package.name, package.build)
-        targets = _package_project_transform(package, package_root, dependency_project, (import_root,))
+            allow_external = True
+        targets = _package_project_transform(
+            package,
+            package_root,
+            dependency_project,
+            (import_root,),
+            allow_external=allow_external,
+        )
         package_targets.extend(targets)
         exported.update(
             ((package.name, original.name), transformed.name)

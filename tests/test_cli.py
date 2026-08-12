@@ -1,4 +1,5 @@
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -27,7 +28,9 @@ def test_native_fixture_build_test_and_compdb() -> None:
     )
     assert test.returncode == 0, test.stdout + test.stderr
     assert "PASS hello" in test.stdout
-    build_root = fixture / ".drift" / "build" / f"{sys.platform}-x86_64-{compiler}-debug"
+    machine = platform.machine().casefold()
+    architecture = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "arm64"}.get(machine, machine)
+    build_root = fixture / ".drift" / "build" / f"{sys.platform}-{architecture}-{compiler}-debug"
     assert (build_root / "compile_commands.json").is_file()
     assert (build_root / "bin" / "message.txt").read_text(encoding="utf-8") == "hello from drift\n"
 
