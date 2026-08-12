@@ -49,6 +49,54 @@ class TargetRef:
 
 
 @dataclass(frozen=True)
+class PackageTargetRef:
+    """Reference to one exported target from a declared package."""
+
+    package: str
+    target: str
+
+
+@dataclass(frozen=True)
+class PackageRef:
+    """Provider-facing handle for selecting targets from one package."""
+
+    name: str
+
+    def target(self, name: str) -> PackageTargetRef:
+        """Return a typed reference to one target exported by this package."""
+        return PackageTargetRef(self.name, name)
+
+
+@dataclass(frozen=True)
+class ArchiveSource:
+    """Immutable archive source verified by SHA-256."""
+
+    url: str
+    sha256: str
+    strip_prefix: str | None = None
+
+
+@dataclass(frozen=True)
+class GitSource:
+    """Git source pinned to one exact commit revision."""
+
+    url: str
+    revision: str
+
+
+PackageSource: TypeAlias = ArchiveSource | GitSource
+
+
+@dataclass(frozen=True)
+class PackageSpec:
+    """Pinned external project and optional trusted local overlay provider."""
+
+    name: str
+    source: PackageSource
+    overlay: Path | None = None
+
+
+@dataclass(frozen=True)
 class Artifact:
     """Reference to one declared output of another target."""
 
@@ -91,7 +139,7 @@ class Dependency:
 class TargetDependency:
     """Target dependency with explicit public or private visibility."""
 
-    target: TargetRef
+    target: TargetRef | PackageTargetRef
     visibility: Visibility
 
 
@@ -266,6 +314,7 @@ class ProjectSpec:
     name: str
     targets: tuple[TargetSpec, ...] = ()
     defaults: tuple[TargetRef, ...] = ()
+    packages: tuple[PackageSpec, ...] = ()
     commands: tuple[CommandSpec, ...] = ()
     tasks: tuple[TaskSpec, ...] = ()
     pools: tuple[PoolSpec, ...] = ()

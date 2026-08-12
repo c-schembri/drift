@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 import sys
 import tomllib
+import urllib.parse
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -13,6 +15,7 @@ from typing import Any, Literal, cast
 from driftbuild.errors import ConfigurationError
 from driftbuild.model import (
     ActionSpec,
+    ArchiveSource,
     Artifact,
     ArtifactSpec,
     BenchmarkSpec,
@@ -23,7 +26,12 @@ from driftbuild.model import (
     Dependency,
     FileSet,
     GitHubSpec,
+    GitSource,
     LinkInterface,
+    PackageRef,
+    PackageSource,
+    PackageSpec,
+    PackageTargetRef,
     PoolSpec,
     ProjectSpec,
     ReleaseSpec,
@@ -66,6 +74,7 @@ class ProjectApi:
         self.root = root.resolve()
         self.config = config
         self._targets: dict[str, TargetSpec] = {}
+        self._packages: dict[str, PackageSpec] = {}
         self._commands: list[CommandSpec] = []
         self._tasks: list[TaskSpec] = []
         self._pools: list[PoolSpec] = []
@@ -177,11 +186,43 @@ class ProjectApi:
 
     prebuilt_library = dependency
 
-    def public(self, target: TargetRef) -> TargetDependency:
+    def archive(self, url: str, sha256: str, *, strip_prefix: str | None = None) -> ArchiveSource:
+        """Declare an archive source pinned by a lowercase SHA-256 digest."""
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme in ("http", "https") and (parsed.username is not None or parsed.password is not None):
+            raise ConfigurationError("Package source URLs cannot contain credentials")
+        if re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+            raise ConfigurationError("Archive sha256 must be 64 lowercase hexadecimal characters")
+        return ArchiveSource(url, sha256, strip_prefix)
+
+    def git(self, url: str, revision: str) -> GitSource:
+        """Declare a Git source pinned to one full commit hash."""
+        parsed = urllib.parse.urlparse(url)
+        local_path = Path(url).expanduser()
+        is_scp = url.startswith("git@")
+        if not local_path.is_absolute() and not is_scp and parsed.scheme not in ("", "file", "https", "ssh"):
+            raise ConfigurationError("Git package sources require an HTTPS, SSH, file, or local path URL")
+        if parsed.scheme in ("http", "https") and (parsed.username is not None or parsed.password is not None):
+            raise ConfigurationError("Package source URLs cannot contain credentials")
+        if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
+            raise ConfigurationError("Git revision must be a full lowercase commit hash")
+        return GitSource(url, revision)
+
+    def package(self, name: str, *, source: PackageSource, overlay: str | os.PathLike[str] | None = None) -> PackageRef:
+        """Declare one pinned external project without fetching or executing it."""
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None or name in (".", ".."):
+            raise ConfigurationError(f"Invalid package name: {name!r}")
+        if any(existing.casefold() == name.casefold() for existing in self._packages):
+            raise ConfigurationError(f"Duplicate package name: {name}")
+        overlay_path = _safe_relative(self.root, overlay, must_exist=True) if overlay is not None else None
+        self._packages[name] = PackageSpec(name, source, overlay_path)
+        return PackageRef(name)
+
+    def public(self, target: TargetRef | PackageTargetRef) -> TargetDependency:
         """Expose a target's compile and link interface to consumers."""
         return TargetDependency(target, "public")
 
-    def private(self, target: TargetRef) -> TargetDependency:
+    def private(self, target: TargetRef | PackageTargetRef) -> TargetDependency:
         """Use a target without exposing its compile interface to consumers."""
         return TargetDependency(target, "private")
 
@@ -357,6 +398,7 @@ class ProjectApi:
             name=name,
             targets=tuple(self._targets.values()),
             defaults=tuple(defaults),
+            packages=tuple(self._packages.values()),
             commands=tuple(self._commands),
             tasks=tuple(self._tasks),
             pools=tuple(self._pools),
@@ -419,6 +461,8 @@ def project_load(root: Path, config: BuildConfig) -> ProjectSpec:
 def project_provider_files(root: Path) -> tuple[Path, ...]:
     """Return loaded Python modules owned by the current project."""
     files: set[Path] = {root / "drift.toml"}
+    if (root / "drift.lock").is_file():
+        files.add(root / "drift.lock")
     for module in tuple(sys.modules.values()):
         module_file = getattr(module, "__file__", None)
         if not isinstance(module_file, str):

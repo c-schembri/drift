@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from driftbuild.errors import ConfigurationError
-from driftbuild.model import Artifact, ProjectSpec, TargetDependency, TargetSpec
+from driftbuild.model import Artifact, PackageTargetRef, ProjectSpec, TargetDependency, TargetSpec
 
 
 def target_map(project: ProjectSpec) -> dict[str, TargetSpec]:
@@ -19,7 +20,11 @@ def target_map(project: ProjectSpec) -> dict[str, TargetSpec]:
 
 
 def _target_edges(target: TargetSpec) -> set[str]:
-    edges = {item.target.name for item in target.dependencies if isinstance(item, TargetDependency)}
+    edges = {
+        item.target.name
+        for item in target.dependencies
+        if isinstance(item, TargetDependency) and not isinstance(item.target, PackageTargetRef)
+    }
     edges.update(item.name for item in target.objects)
     for value in (*target.sources, *target.runtime_files):
         if isinstance(value, Artifact):
@@ -58,6 +63,13 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
     if not project.name:
         raise ConfigurationError("Project name cannot be empty")
     targets = target_map(project)
+    packages = {package.name for package in project.packages}
+    if len(packages) != len(project.packages):
+        raise ConfigurationError("Package names must be unique")
+    if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None for name in packages):
+        raise ConfigurationError("Package names contain invalid characters")
+    if len({name.casefold() for name in packages}) != len(packages):
+        raise ConfigurationError("Package names must not collide by case")
     outputs: dict[str, str] = {}
     graph: dict[str, set[str]] = {}
 
@@ -66,6 +78,15 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
             raise ConfigurationError(f"Target {target.name} requires an action")
         if target.action is not None and tuple(target.outputs) != tuple(target.action.outputs):
             raise ConfigurationError(f"Target {target.name} outputs do not match its action")
+        unknown_packages = sorted(
+            dependency.target.package
+            for dependency in target.dependencies
+            if isinstance(dependency, TargetDependency)
+            and isinstance(dependency.target, PackageTargetRef)
+            and dependency.target.package not in packages
+        )
+        if unknown_packages:
+            raise ConfigurationError(f"Target {target.name} references unknown packages: {', '.join(unknown_packages)}")
         for output in target.outputs:
             key = output.as_posix().casefold()
             owner = outputs.get(key)

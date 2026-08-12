@@ -13,7 +13,7 @@ from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate
-from driftbuild.model import Artifact, Dependency, ProjectSpec, TargetDependency, TargetSpec
+from driftbuild.model import Artifact, Dependency, ProjectSpec, TargetDependency, TargetRef, TargetSpec
 
 _MSBUILD_NAMESPACE = "http://schemas.microsoft.com/developer/msbuild/2003"
 _VC_PROJECT_TYPE = "{BC8A1FFA-BEE3-4634-8014-F334798102B3}"
@@ -21,6 +21,11 @@ _GUID_NAMESPACE = uuid.UUID("31747168-1188-46e1-8237-5939fc79682c")
 _SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx"}
 _HEADER_SUFFIXES = {".h", ".hh", ".hpp", ".hxx", ".inl"}
 _SAFE_TARGET_NAME = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def _dependency_target_name(dependency: TargetDependency) -> str:
+    assert isinstance(dependency.target, TargetRef)
+    return dependency.target.name
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,7 @@ def _element(parent: xml.Element, name: str, text: str | None = None, **attribut
 
 
 def _target_dependencies(target: TargetSpec) -> set[str]:
-    dependencies = {item.target.name for item in target.dependencies if isinstance(item, TargetDependency)}
+    dependencies = {_dependency_target_name(item) for item in target.dependencies if isinstance(item, TargetDependency)}
     dependencies.update(item.name for item in target.objects)
     for value in (*target.sources, *target.runtime_files):
         if isinstance(value, Artifact):
@@ -81,7 +86,7 @@ def _public_interface(
             includes.extend(dependency.compile.include_dirs)
             defines.extend(dependency.compile.defines)
         elif dependency.visibility == "public":
-            child_includes, child_defines = _public_interface(targets, dependency.target.name, visited)
+            child_includes, child_defines = _public_interface(targets, _dependency_target_name(dependency), visited)
             includes.extend(child_includes)
             defines.extend(child_defines)
     return includes, defines
@@ -95,7 +100,7 @@ def _compile_interface(target: TargetSpec, targets: Mapping[str, TargetSpec]) ->
             includes.extend(dependency.compile.include_dirs)
             defines.extend(dependency.compile.defines)
         else:
-            child_includes, child_defines = _public_interface(targets, dependency.target.name)
+            child_includes, child_defines = _public_interface(targets, _dependency_target_name(dependency))
             includes.extend(child_includes)
             defines.extend(child_defines)
     return includes, defines

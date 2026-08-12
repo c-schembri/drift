@@ -21,6 +21,11 @@ app = api.executable("app", sources=api.files("src/main.cpp"), dependencies=(api
 
 Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it.
 
+`api.package(...)` declares a locked source package separately from its eventual compile/link interface. Sources are exact
+`api.archive(url, sha256, strip_prefix=...)` or `api.git(url, revision)` values. Select an exported target with
+`package.target("name")`, then pass it to `api.public(...)` or `api.private(...)`. See the [package guide](packages.md)
+for locking, local overlays, offline operation, and current limitations.
+
 `api.command_action(...)` defines a custom action with explicit inputs, outputs, environment, depfile policy, timeout, and Ninja pool. Register constrained pools with `api.pool(PoolSpec(...))`. Command arguments may use the exact tokens `{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap the action with `custom_target` or `external_library`. `runtime_bundle` copies explicit files beside a stamp target. `alias` groups targets.
 
 ## Platform services

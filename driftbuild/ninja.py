@@ -13,7 +13,7 @@ from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate, transitive_targets
-from driftbuild.model import Artifact, BuildConfig, Dependency, ProjectSpec, TargetSpec
+from driftbuild.model import Artifact, BuildConfig, Dependency, ProjectSpec, TargetDependency, TargetRef, TargetSpec
 from driftbuild.toolchain import Toolchain
 
 
@@ -47,6 +47,11 @@ def _write_if_changed(path: Path, content: str) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_bytes(encoded)
     os.replace(temporary, path)
+
+
+def _dependency_target_name(dependency: TargetDependency) -> str:
+    assert isinstance(dependency.target, TargetRef)
+    return dependency.target.name
 
 
 def _target_output(target: TargetSpec, build_root: Path, toolchain: Toolchain) -> tuple[Path, ...]:
@@ -95,7 +100,7 @@ def _public_interface(
             defines.extend(dependency.compile.defines)
             arguments.extend(dependency.compile.arguments)
         elif dependency.visibility == "public":
-            child = _public_interface(targets, dependency.target.name, visited)
+            child = _public_interface(targets, _dependency_target_name(dependency), visited)
             includes.extend(child[0])
             defines.extend(child[1])
             arguments.extend(child[2])
@@ -118,7 +123,7 @@ def _compile_flags(
             defines.extend(dependency.compile.defines)
             arguments.extend(dependency.compile.arguments)
         else:
-            child = _public_interface(targets, dependency.target.name)
+            child = _public_interface(targets, _dependency_target_name(dependency))
             includes.extend(child[0])
             defines.extend(child[1])
             arguments.extend(child[2])
@@ -169,7 +174,7 @@ def _link_inputs(
                 prefix = "/LIBPATH:" if toolchain.family == "msvc" else "-L"
                 arguments.extend(f"{prefix}{root / value}" for value in nested.link.library_dirs)
             elif nested.visibility == "public":
-                add_target(nested.target.name)
+                add_target(_dependency_target_name(nested))
 
     for dependency in target.dependencies:
         if isinstance(dependency, Dependency):
@@ -178,7 +183,7 @@ def _link_inputs(
             prefix = "/LIBPATH:" if toolchain.family == "msvc" else "-L"
             arguments.extend(f"{prefix}{root / value}" for value in dependency.link.library_dirs)
         else:
-            add_target(dependency.target.name)
+            add_target(_dependency_target_name(dependency))
     for reference in target.objects:
         paths.extend(outputs[reference.name])
     return paths, arguments

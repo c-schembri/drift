@@ -19,8 +19,10 @@ _OPERATIONS = {
     "clean",
     "command",
     "configure",
+    "fetch",
     "generate",
     "graph",
+    "lock",
     "release",
     "remote",
     "run",
@@ -75,7 +77,7 @@ def _operation_find(arguments: list[str]) -> tuple[str, int] | None:
         if argument.startswith(("--root=", "--compiler=", "--architecture=", "--build-type=", "--define=", "-D")):
             index += 1
             continue
-        if argument == "-v":
+        if argument in ("-v", "--offline"):
             index += 1
             continue
         return None

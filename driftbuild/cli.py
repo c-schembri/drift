@@ -16,7 +16,16 @@ from typing import Any
 from driftbuild import __version__
 from driftbuild.errors import DriftError, ExecutionError
 from driftbuild.graph import project_validate
-from driftbuild.model import Artifact, BuildConfig, CommandContext, CommandResult, OptionSpec, ProjectSpec
+from driftbuild.model import (
+    Artifact,
+    BuildConfig,
+    CommandContext,
+    CommandResult,
+    OptionSpec,
+    PackageTargetRef,
+    ProjectSpec,
+    TargetDependency,
+)
 from driftbuild.project import project_load, project_root_find
 
 
@@ -29,8 +38,10 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "build",
         "clean",
         "configure",
+        "fetch",
         "generate",
         "graph",
+        "lock",
         "run",
         "task",
         "test",
@@ -78,6 +89,7 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--architecture", default=platform.machine().lower() or "x86_64")
     parser.add_argument("--build-type", choices=("debug", "release"), default="debug")
     parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--offline", action="store_true", help="forbid package network access")
     parser.add_argument("-v", "--verbose", action="store_true")
     commands = parser.add_subparsers(dest="operation", required=True)
 
@@ -89,6 +101,10 @@ def _base_parser() -> argparse.ArgumentParser:
     clean_parser = commands.add_parser("clean", help="remove outputs for default or named targets")
     clean_parser.add_argument("targets", nargs="*")
     clean_parser.set_defaults(handler=_clean)
+    lock_parser = commands.add_parser("lock", help="resolve exact package sources and replace drift.lock")
+    lock_parser.set_defaults(handler=_lock)
+    fetch_parser = commands.add_parser("fetch", help="download and verify packages from drift.lock")
+    fetch_parser.set_defaults(handler=_fetch)
     run_parser = commands.add_parser("run", help="build and run an executable target")
     run_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     run_parser.set_defaults(handler=_run)
@@ -153,6 +169,22 @@ def _clean(arguments: argparse.Namespace, project: ProjectSpec, root: Path, conf
     return 0
 
 
+def _lock(_arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.packages import package_lock_create
+
+    result = package_lock_create(project, root)
+    print(f"Locked {len(result.packages)} package(s) in {root / 'drift.lock'}")
+    return 0
+
+
+def _fetch(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.packages import packages_fetch
+
+    roots = packages_fetch(project, root, offline=arguments.offline)
+    print(f"Fetched and verified {len(roots)} package(s)")
+    return 0
+
+
 def _run(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
     from driftbuild.runner import build_and_run
 
@@ -169,16 +201,15 @@ def _run(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config
 def _generate_visual_studio(
     arguments: argparse.Namespace, _project: ProjectSpec, root: Path, config: BuildConfig
 ) -> int:
+    from driftbuild.packages import packages_compose
     from driftbuild.project import project_load
     from driftbuild.visual_studio import generate
 
-    projects = {
-        build_type: project_load(
-            root,
-            BuildConfig("win32", config.architecture, "msvc", build_type, config.values),
-        )
-        for build_type in ("debug", "release")
-    }
+    projects: dict[str, ProjectSpec] = {}
+    for build_type in ("debug", "release"):
+        selected = BuildConfig("win32", config.architecture, "msvc", build_type, config.values)
+        loaded = project_load(root, selected)
+        projects[build_type] = packages_compose(loaded, root, selected, offline=arguments.offline)
     output_root = arguments.output.resolve() if arguments.output else root / ".drift" / "visual-studio"
     result = generate(
         projects,
@@ -198,7 +229,13 @@ def _graph(_arguments: argparse.Namespace, project: ProjectSpec, _root_path: Pat
         name: {
             "kind": target.kind,
             "dependencies": [
-                *[item.target.name for item in target.dependencies if hasattr(item, "target")],
+                *[
+                    f"@{item.target.package}//{item.target.target}"
+                    if isinstance(item.target, PackageTargetRef)
+                    else item.target.name
+                    for item in target.dependencies
+                    if isinstance(item, TargetDependency)
+                ],
                 *[item.name for item in target.objects],
             ],
             "outputs": [str(path) for path in target.outputs],
@@ -335,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
         root = _root(arguments)
         config = _configuration(arguments)
         project = project_load(root, config)
+        if arguments.operation not in ("lock", "fetch"):
+            from driftbuild.packages import packages_compose
+
+            project = packages_compose(project, root, config, offline=arguments.offline)
         project_validate(project)
         return int(arguments.handler(arguments, project, root, config))
     except DriftError as error:

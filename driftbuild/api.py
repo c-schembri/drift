@@ -2,6 +2,7 @@
 
 from driftbuild.model import (
     ActionSpec,
+    ArchiveSource,
     Artifact,
     ArtifactSpec,
     BenchmarkSpec,
@@ -13,8 +14,13 @@ from driftbuild.model import (
     Dependency,
     FileSet,
     GitHubSpec,
+    GitSource,
     LinkInterface,
     OptionSpec,
+    PackageRef,
+    PackageSource,
+    PackageSpec,
+    PackageTargetRef,
     PoolSpec,
     ProjectSpec,
     ReleaseSpec,
@@ -27,6 +33,7 @@ from driftbuild.project import ProjectApi
 
 __all__ = [
     "ActionSpec",
+    "ArchiveSource",
     "Artifact",
     "ArtifactSpec",
     "BenchmarkSpec",
@@ -38,8 +45,13 @@ __all__ = [
     "Dependency",
     "FileSet",
     "GitHubSpec",
+    "GitSource",
     "LinkInterface",
     "OptionSpec",
+    "PackageRef",
+    "PackageSource",
+    "PackageSpec",
+    "PackageTargetRef",
     "PoolSpec",
     "ProjectApi",
     "ProjectSpec",

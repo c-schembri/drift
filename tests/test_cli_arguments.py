@@ -45,6 +45,16 @@ def test_run_accepts_project_directory_before_target(tmp_path: Path) -> None:
     assert normalized == ["--root", str(project.resolve()), "run", "app", "--", "argument"]
 
 
+def test_lock_accepts_project_directory(tmp_path: Path) -> None:
+    project = tmp_path / "sample"
+    project.mkdir()
+    (project / "drift.toml").write_text("[project]\n", encoding="utf-8")
+
+    normalized = _project_directory_normalize(["lock", str(project)])
+
+    assert normalized == ["--root", str(project.resolve()), "lock"]
+
+
 def test_run_separates_target_from_program_arguments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     received: tuple[str | None, tuple[str, ...]] | None = None
 
