@@ -46,6 +46,7 @@ def test_native_fixture_build_test_and_compdb() -> None:
         check=False,
     )
     assert ran.returncode == 0, ran.stdout + ran.stderr
+    assert "Build timing: total " in ran.stdout
     assert "42" in ran.stdout
 
     generated = subprocess.run(

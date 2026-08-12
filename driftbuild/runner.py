@@ -7,7 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from driftbuild.build import build
+from driftbuild.build import build, build_timing_render
 from driftbuild.errors import ExecutionError
 from driftbuild.graph import project_validate, transitive_targets
 from driftbuild.model import BuildConfig, ProjectSpec, TargetSpec
@@ -48,6 +48,8 @@ def build_and_run(
     """Build one selected executable and run it from the project root."""
     target = executable_select(project, target_name)
     result = build(project, root, state_root, config, (target.name,))
+    assert result.timing is not None
+    print(build_timing_render(result.timing), flush=True)
     outputs = result.generated.outputs[target.name]
     if not outputs:
         raise ExecutionError(f"Executable target has no output: {target.name}")
