@@ -79,7 +79,8 @@ def _linux_project(root: Path, config: BuildConfig) -> ProjectSpec:
         _COMMON
         + _UNIX
         + (
-            "src/core/linux/*.c",
+            "src/core/linux/SDL_evdev_capabilities.c",
+            "src/core/linux/SDL_threadprio.c",
             "src/filesystem/unix/*.c",
             "src/locale/unix/*.c",
             "src/misc/unix/*.c",
