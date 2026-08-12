@@ -8,6 +8,7 @@ def project(api: ProjectApi):
         "sdl3",
         source=api.git("https://github.com/libsdl-org/SDL.git", SDL_REVISION),
     )
+
     window = api.executable(
         "sdl3-window",
         sources=api.files("src/main.c"),

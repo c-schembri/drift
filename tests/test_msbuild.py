@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from driftbuild.api import BuildConfig, PackageTargetRef, ProjectApi
-from driftbuild.model import Dependency
-from driftbuild.msbuild import project_discover, project_import
+from driftbuild.api import BuildConfig, ProjectApi
+from driftbuild.model import Dependency, TargetDependency, TargetRef
+from driftbuild.msbuild import project_import
 
 
 def test_msbuild_imports_selected_native_configuration(tmp_path: Path) -> None:
@@ -66,27 +66,34 @@ def test_package_accepts_msbuild_description_without_local_overlay(tmp_path: Pat
     assert package.build == build
 
 
-def test_single_msbuild_project_is_discovered_and_package_selects_its_default(tmp_path: Path) -> None:
-    (tmp_path / "sample.c").write_text("int sample(void) { return 1; }\n", encoding="utf-8")
-    (tmp_path / "sample.vcxproj").write_text(
+def test_msbuild_imports_project_reference_graph(tmp_path: Path) -> None:
+    (tmp_path / "child.c").write_text("int child(void) { return 1; }\n", encoding="utf-8")
+    (tmp_path / "parent.c").write_text("int parent(void) { return 2; }\n", encoding="utf-8")
+    (tmp_path / "child.vcxproj").write_text(
         r"""<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <PropertyGroup><ProjectName>sample</ProjectName></PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-  </PropertyGroup>
-  <ItemGroup><ClCompile Include="sample.c" /></ItemGroup>
+  <PropertyGroup><ProjectName>child</ProjectName><ConfigurationType>StaticLibrary</ConfigurationType></PropertyGroup>
+  <ItemGroup><ClCompile Include="child.c" /></ItemGroup>
 </Project>
 """,
         encoding="utf-8",
     )
-    config = BuildConfig("win32", architecture="x86_64", compiler="msvc", build_type="debug")
+    (tmp_path / "parent.vcxproj").write_text(
+        r"""<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><ProjectName>parent</ProjectName><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="parent.c" />
+    <ProjectReference Include="child.vcxproj" />
+  </ItemGroup>
+</Project>
+""",
+        encoding="utf-8",
+    )
 
-    imported = project_discover(tmp_path, config, "sample")
-    api = ProjectApi(tmp_path, config)
-    package = api.package("sample", source=api.git("https://example.com/sample.git", "a" * 40))
-    dependency = api.private(package)
+    config = BuildConfig("win32")
+    imported = project_import(tmp_path, config, ProjectApi(tmp_path, config).msbuild("parent.vcxproj"))
 
-    assert imported.targets[0].name == "sample"
-    assert imported.targets[0].kind == "static_library"
-    assert isinstance(dependency.target, PackageTargetRef)
-    assert dependency.target.target == ""
+    assert {target.name for target in imported.targets} == {"child", "parent"}
+    parent = next(target for target in imported.targets if target.name == "parent")
+    reference = next(dependency for dependency in parent.dependencies if isinstance(dependency, TargetDependency))
+    assert isinstance(reference.target, TargetRef)
+    assert reference.target.name == "child"

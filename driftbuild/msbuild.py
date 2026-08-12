@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 import shlex
 import xml.etree.ElementTree as element_tree
+from dataclasses import replace
 from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
-from driftbuild.model import BuildConfig, MsbuildProject, ProjectSpec, TargetKind
+from driftbuild.model import BuildConfig, MsbuildProject, ProjectSpec, TargetDependency, TargetKind, TargetRef
 from driftbuild.project import ProjectApi
 
 _NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
@@ -84,8 +85,31 @@ def _unique(values: list[str]) -> tuple[str, ...]:
     return tuple(result)
 
 
-def project_import(root: Path, config: BuildConfig, build: MsbuildProject) -> ProjectSpec:
-    """Translate one MSBuild C/C++ project into the native Drift graph."""
+def _project_name(path: Path) -> str | None:
+    try:
+        document = element_tree.parse(path)
+    except (OSError, element_tree.ParseError):
+        return None
+    return document.getroot().findtext(".//msbuild:ProjectName", namespaces=_NAMESPACE) or path.stem
+
+
+def project_discover(root: Path, config: BuildConfig, package_name: str) -> ProjectSpec | None:
+    """Import the best matching checked-in Visual C++ project, when one exists."""
+    expected = re.sub(r"[^a-z0-9]", "", package_name.casefold())
+    candidates = [
+        path
+        for path in root.rglob("*.vcxproj")
+        if (name := _project_name(path)) is not None
+        and re.sub(r"[^a-z0-9]", "", name.casefold()) == expected
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: (len(path.relative_to(root).parts), len(str(path.relative_to(root))), str(path)))
+    selected = candidates[0].relative_to(root)
+    return project_import(root, config, MsbuildProject(selected))
+
+
+def _project_import_one(root: Path, config: BuildConfig, build: MsbuildProject) -> ProjectSpec:
     path = (root / build.project_file).resolve()
     try:
         path.relative_to(root.resolve())
@@ -164,22 +188,46 @@ def project_import(root: Path, config: BuildConfig, build: MsbuildProject) -> Pr
     return api.project(project_name, defaults=(target,))
 
 
-def project_discover(root: Path, config: BuildConfig, package_name: str) -> ProjectSpec:
-    """Discover a conventional native project in a package source tree."""
-    sdl_project = root / "VisualC" / "SDL" / "SDL.vcxproj"
-    if sdl_project.is_file() and (root / "include" / "SDL3" / "SDL.h").is_file():
-        from driftbuild.sdl import project_import as sdl_import
+def _project_references(root: Path, project_file: Path) -> tuple[Path, ...]:
+    path = (root / project_file).resolve()
+    try:
+        document = element_tree.parse(path)
+    except (OSError, element_tree.ParseError) as error:
+        raise ConfigurationError(f"Cannot load MSBuild project {project_file}: {error}") from error
+    references: list[Path] = []
+    for element in document.getroot().findall(".//msbuild:ProjectReference", _NAMESPACE):
+        value = element.attrib.get("Include")
+        if value is not None:
+            references.append(_package_path(root, path.parent, value))
+    return tuple(references)
 
-        return sdl_import(root, config)
 
-    projects = sorted(root.rglob("*.vcxproj"), key=lambda path: path.relative_to(root).as_posix())
-    if len(projects) == 1:
-        return project_import(root, config, MsbuildProject(projects[0].relative_to(root)))
+def project_import(root: Path, config: BuildConfig, build: MsbuildProject) -> ProjectSpec:
+    """Translate one Visual C++ project and its project-reference closure into Drift."""
+    projects: dict[Path, ProjectSpec] = {}
+    visiting: set[Path] = set()
 
-    normalized_name = re.sub(r"[^a-z0-9]", "", package_name.casefold())
-    matches = [path for path in projects if re.sub(r"[^a-z0-9]", "", path.stem.casefold()) == normalized_name]
-    if len(matches) == 1:
-        return project_import(root, config, MsbuildProject(matches[0].relative_to(root)))
-    raise ConfigurationError(
-        f"Cannot determine how to build package {package_name}; add a Drift provider, supported project, or overlay"
-    )
+    def load(description: MsbuildProject) -> ProjectSpec:
+        path = (root / description.project_file).resolve()
+        existing = projects.get(path)
+        if existing is not None:
+            return existing
+        if path in visiting:
+            raise ConfigurationError(f"MSBuild project reference cycle at {description.project_file}")
+        visiting.add(path)
+        dependencies: list[TargetDependency] = []
+        for reference in _project_references(root, description.project_file):
+            child = load(MsbuildProject(reference))
+            if len(child.defaults) != 1:
+                raise ConfigurationError(f"MSBuild project {reference} does not expose one default target")
+            dependencies.append(TargetDependency(TargetRef(child.defaults[0].name), "public"))
+        imported = _project_import_one(root, config, description)
+        target = replace(imported.targets[0], dependencies=tuple((*imported.targets[0].dependencies, *dependencies)))
+        result = replace(imported, targets=(target,))
+        projects[path] = result
+        visiting.remove(path)
+        return result
+
+    selected = load(build)
+    targets = tuple(target for project in projects.values() for target in project.targets)
+    return replace(selected, targets=targets)

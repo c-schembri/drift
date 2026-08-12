@@ -58,14 +58,27 @@ def build_and_run(
         raise ExecutionError(f"Built executable does not exist: {executable}")
 
     environment = dict(os.environ)
-    environment["PATH"] = os.pathsep.join((str(executable.parent), environment.get("PATH", "")))
+    targets = project_validate(project)
+    reachable = transitive_targets(targets, (target.name,))
+    runtime_directories = [executable.parent]
+    for name in sorted(reachable):
+        dependency = targets[name]
+        if dependency.kind != "external_library":
+            continue
+        for output in result.generated.outputs[name]:
+            filename = output.name.casefold()
+            is_runtime = output.suffix.casefold() in (".dll", ".so", ".dylib") or ".so." in filename
+            if is_runtime and output.parent not in runtime_directories:
+                runtime_directories.append(output.parent)
+    runtime_path = os.pathsep.join(str(path) for path in runtime_directories)
+    environment["PATH"] = os.pathsep.join((runtime_path, environment.get("PATH", "")))
     if sys.platform == "darwin":
         environment["DYLD_LIBRARY_PATH"] = os.pathsep.join(
-            (str(executable.parent), environment.get("DYLD_LIBRARY_PATH", ""))
+            (runtime_path, environment.get("DYLD_LIBRARY_PATH", ""))
         )
     elif sys.platform != "win32":
         environment["LD_LIBRARY_PATH"] = os.pathsep.join(
-            (str(executable.parent), environment.get("LD_LIBRARY_PATH", ""))
+            (runtime_path, environment.get("LD_LIBRARY_PATH", ""))
         )
     completed = run((str(executable), *arguments), cwd=root, environment=environment, check=False)
     return completed.returncode

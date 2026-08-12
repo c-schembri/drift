@@ -162,7 +162,7 @@ def _link_inputs(
             if toolchain.family == "msvc" and child.kind == "shared_library":
                 paths.extend(path for path in candidates if path.suffix == ".lib")
             elif child.kind == "external_library":
-                suffixes = {".lib"} if toolchain.family == "msvc" else {".a", ".so"}
+                suffixes = {".lib"} if toolchain.family == "msvc" else {".a", ".so", ".dylib"}
                 libraries = tuple(path for path in candidates if path.suffix in suffixes)
                 paths.extend(libraries or candidates)
             else:

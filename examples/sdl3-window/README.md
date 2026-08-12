@@ -1,7 +1,7 @@
 # SDL3 Window
 
-This example locks SDL 3.4.10 to its exact upstream Git commit and builds SDL's official Visual Studio source inventory
-directly through Drift and Ninja. It does not invoke CMake or require a system SDL installation.
+This example locks SDL 3.4.10 to its exact upstream Git commit. Drift detects SDL's upstream build description,
+imports its target graph, and selects the SDL3 library without a package-specific recipe.
 
 ```console
 drift lock
@@ -14,4 +14,5 @@ Close the window normally to stop the program. For automated smoke checks, pass 
 drift run -- --timeout-ms 1000
 ```
 
-Drift selects SDL's native Windows, Linux, or macOS recipe for the current host. Neither CMake nor MSBuild is invoked.
+On Windows, Drift imports SDL's checked-in Visual C++ project directly. On Linux and macOS it uses CMake's File API,
+caches the configured graph, and delegates only the dependency build to CMake.

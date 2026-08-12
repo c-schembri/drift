@@ -22,16 +22,13 @@ app = api.executable("app", sources=api.files("src/main.cpp"), dependencies=(api
 Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it.
 
 `api.package(...)` declares a locked source package separately from its eventual compile/link interface. Sources are exact
-`api.archive(url, sha256, strip_prefix=...)` or `api.git(url, revision)` values. Select an exported target with
-`package.target("name")`, then pass it to `api.public(...)` or `api.private(...)`. See the [package guide](packages.md)
-for locking, local overlays, offline operation, and current limitations.
+`api.archive(url, sha256, strip_prefix=...)` or `api.git(url, revision)` values. Drift detects an upstream Drift provider,
+Visual C++ project, or CMake codemodel from the materialized source. Pass the returned package directly to
+`api.public(...)` or `api.private(...)` to use its imported default library. Use `package.target("name")` only to select
+another exported target explicitly. See the [package guide](packages.md) for locking and current limitations.
 
-Pass a package handle directly to `api.public(...)` or `api.private(...)` to consume its single default target. Drift
-first looks for an upstream Drift provider, then detects supported conventional native projects. Explicit target and
-build descriptions are escape hatches for ambiguous packages, not routine dependency boilerplate.
-
-`api.msbuild(project_file, ...)` imports the native C/C++ subset of an upstream `.vcxproj` directly into Drift. Pass it
-as `package(..., build=...)`; Drift reads the selected source list and compile/link interface but never invokes MSBuild.
+`api.msbuild(project_file, ...)` is an explicit override for ambiguous Visual C++ repositories. Normal packages do not
+need it. Drift reads the selected project and its `ProjectReference` closure but never invokes MSBuild.
 
 `api.command_action(...)` defines a custom action with explicit inputs, outputs, environment, depfile policy, timeout, and Ninja pool. Register constrained pools with `api.pool(PoolSpec(...))`. Command arguments may use the exact tokens `{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap the action with `custom_target` or `external_library`. `runtime_bundle` copies explicit files beside a stamp target. `alias` groups targets.
 

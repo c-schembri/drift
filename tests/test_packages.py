@@ -44,7 +44,7 @@ def _package_project(root: Path, archive: Path, checksum: str):
     )
     source = root / "main.c"
     source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    app = api.executable("app", sources=api.files("main.c"), dependencies=(api.private(package.target("answer")),))
+    app = api.executable("app", sources=api.files("main.c"), dependencies=(api.private(package),))
     return api.project("sample", defaults=(app,))
 
 

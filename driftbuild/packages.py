@@ -535,49 +535,59 @@ def _package_target_name(package: str, target: str) -> str:
     return f"__drift_package_{package}_{readable}_{digest}"
 
 
-def _package_path(package_root: Path, value: Path) -> Path:
+def _package_path(package_root: Path, value: Path, extra_roots: tuple[Path, ...] = ()) -> Path:
     resolved = value.resolve() if value.is_absolute() else (package_root / value).resolve()
-    try:
-        resolved.relative_to(package_root.resolve())
-    except ValueError as error:
-        raise ConfigurationError(f"Package path escapes its source root: {value}") from error
-    return resolved
+    for allowed in (package_root, *extra_roots):
+        try:
+            resolved.relative_to(allowed.resolve())
+            return resolved
+        except ValueError:
+            continue
+    raise ConfigurationError(f"Package path escapes its source and import roots: {value}")
 
 
-def _package_output(package: str, value: Path) -> Path:
-    if value.is_absolute() or ".." in value.parts:
+def _package_output(package: str, value: Path, extra_roots: tuple[Path, ...]) -> Path:
+    if value.is_absolute():
+        return _package_path(extra_roots[0], value, extra_roots[1:])
+    if ".." in value.parts:
         raise ConfigurationError(f"Package output escapes its build root: {value}")
     return Path("packages") / package / value
 
 
-def _input_rebase(value: BuildInput, package_root: Path, names: dict[str, str]) -> BuildInput:
+def _input_rebase(
+    value: BuildInput, package_root: Path, names: dict[str, str], extra_roots: tuple[Path, ...]
+) -> BuildInput:
     if isinstance(value, Path):
-        return _package_path(package_root, value)
+        return _package_path(package_root, value, extra_roots)
     return Artifact(TargetRef(names[value.target.name]), value.path)
 
 
-def _dependency_rebase(dependency: Dependency, package_root: Path) -> Dependency:
+def _dependency_rebase(dependency: Dependency, package_root: Path, extra_roots: tuple[Path, ...]) -> Dependency:
     libraries = tuple(
-        _package_path(package_root, value) if isinstance(value, Path) else value for value in dependency.link.libraries
+        _package_path(package_root, value, extra_roots) if isinstance(value, Path) else value
+        for value in dependency.link.libraries
     )
     return Dependency(
         dependency.name,
         CompileInterface(
-            tuple(_package_path(package_root, value) for value in dependency.compile.include_dirs),
+            tuple(_package_path(package_root, value, extra_roots) for value in dependency.compile.include_dirs),
             dependency.compile.defines,
             dependency.compile.arguments,
         ),
         LinkInterface(
             libraries,
-            tuple(_package_path(package_root, value) for value in dependency.link.library_dirs),
+            tuple(_package_path(package_root, value, extra_roots) for value in dependency.link.library_dirs),
             dependency.link.arguments,
         ),
-        tuple(_package_path(package_root, value) for value in dependency.runtime_files),
+        tuple(_package_path(package_root, value, extra_roots) for value in dependency.runtime_files),
     )
 
 
 def _package_project_transform(
-    package: PackageSpec, package_root: Path, project: ProjectSpec
+    package: PackageSpec,
+    package_root: Path,
+    project: ProjectSpec,
+    extra_roots: tuple[Path, ...] = (),
 ) -> tuple[TargetSpec, ...]:
     if project.packages:
         raise ConfigurationError(f"Package {package.name} declares transitive packages; this is not supported yet")
@@ -596,29 +606,52 @@ def _package_project_transform(
     names = {target.name: _package_target_name(package.name, target.name) for target in project.targets}
     transformed: list[TargetSpec] = []
     for target in project.targets:
-        if target.action is not None or target.kind in ("custom", "external_library", "runtime_bundle"):
-            raise ConfigurationError(f"Package {package.name} target {target.name} uses an unsupported action target")
         dependencies: list[Dependency | TargetDependency] = []
         for dependency in target.dependencies:
             if isinstance(dependency, Dependency):
-                dependencies.append(_dependency_rebase(dependency, package_root))
+                dependencies.append(_dependency_rebase(dependency, package_root, extra_roots))
             elif isinstance(dependency.target, PackageTargetRef):
                 raise ConfigurationError(f"Package {package.name} target {target.name} uses a transitive package")
             else:
                 dependencies.append(TargetDependency(TargetRef(names[dependency.target.name]), dependency.visibility))
-        outputs = tuple(_package_output(package.name, output) for output in target.outputs)
+        outputs = tuple(_package_output(package.name, output, extra_roots) for output in target.outputs)
+        action = target.action
+        if action is not None:
+            action = replace(
+                action,
+                outputs=outputs,
+                inputs=tuple(_input_rebase(value, package_root, names, extra_roots) for value in action.inputs),
+                implicit_inputs=tuple(
+                    _input_rebase(value, package_root, names, extra_roots) for value in action.implicit_inputs
+                ),
+                order_only=tuple(
+                    _input_rebase(value, package_root, names, extra_roots) for value in action.order_only
+                ),
+                depfile=(
+                    _package_output(package.name, action.depfile, extra_roots)
+                    if action.depfile is not None
+                    else None
+                ),
+            )
         transformed.append(
             replace(
                 target,
                 name=names[target.name],
-                sources=tuple(_input_rebase(value, package_root, names) for value in target.sources),
-                public_headers=tuple(_input_rebase(value, package_root, names) for value in target.public_headers),
-                private_headers=tuple(_input_rebase(value, package_root, names) for value in target.private_headers),
-                include_dirs=tuple(_package_path(package_root, value) for value in target.include_dirs),
+                sources=tuple(_input_rebase(value, package_root, names, extra_roots) for value in target.sources),
+                public_headers=tuple(
+                    _input_rebase(value, package_root, names, extra_roots) for value in target.public_headers
+                ),
+                private_headers=tuple(
+                    _input_rebase(value, package_root, names, extra_roots) for value in target.private_headers
+                ),
+                include_dirs=tuple(_package_path(package_root, value, extra_roots) for value in target.include_dirs),
                 dependencies=tuple(dependencies),
                 objects=tuple(TargetRef(names[reference.name]) for reference in target.objects),
-                runtime_files=tuple(_input_rebase(value, package_root, names) for value in target.runtime_files),
+                runtime_files=tuple(
+                    _input_rebase(value, package_root, names, extra_roots) for value in target.runtime_files
+                ),
                 outputs=outputs,
+                action=action,
             )
         )
     return tuple(transformed)
@@ -646,20 +679,16 @@ def packages_compose(
     exported: dict[tuple[str, str], str] = {}
     for package in sorted(project.packages, key=lambda item: item.name):
         package_root = package_roots[package.name]
-        if package.build is not None:
-            from driftbuild.msbuild import project_import
-
-            dependency_project = project_import(package_root, config, package.build)
-        elif package.overlay is None:
-            if (package_root / "drift.toml").is_file():
-                dependency_project = project_load(package_root, config)
-            else:
-                from driftbuild.msbuild import project_discover
-
-                dependency_project = project_discover(package_root, config, package.name)
-        else:
+        import_root = root / ".drift" / "imports"
+        if package.overlay is not None:
             dependency_project = _overlay_load(root / package.overlay, package_root, config, package.name)
-        targets = _package_project_transform(package, package_root, dependency_project)
+        elif package.build is None and (package_root / "drift.toml").is_file():
+            dependency_project = project_load(package_root, config)
+        else:
+            from driftbuild.importers import project_import
+
+            dependency_project = project_import(package_root, import_root, config, package.name, package.build)
+        targets = _package_project_transform(package, package_root, dependency_project, (import_root,))
         package_targets.extend(targets)
         exported.update(
             ((package.name, original.name), transformed.name)
