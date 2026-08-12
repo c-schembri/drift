@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any, cast
 
+from driftbuild.bootstrap import cmake_resolve, ninja_resolve
 from driftbuild.errors import ConfigurationError
 from driftbuild.model import ActionSpec, BuildConfig, ProjectSpec, TargetDependency, TargetKind, TargetRef, TargetSpec
 from driftbuild.process import run
+from driftbuild.toolchain import toolchain_resolve
 
 _SCHEMA_VERSION = 1
 _TARGET_KINDS = {"STATIC_LIBRARY", "SHARED_LIBRARY", "MODULE_LIBRARY", "EXECUTABLE"}
@@ -58,18 +60,25 @@ def _configure(
     build_root: Path,
     config: BuildConfig,
     cmake: str,
+    ninja: str,
+    environment: dict[str, str],
 ) -> tuple[Path, dict[str, Any]]:
     query = build_root / ".cmake" / "api" / "v1" / "query" / "codemodel-v2"
     query.parent.mkdir(parents=True, exist_ok=True)
     query.touch()
     cmake_path = Path(cmake).resolve()
     cmake_stat = cmake_path.stat()
+    ninja_path = Path(ninja).resolve()
+    ninja_stat = ninja_path.stat()
     fingerprint = {
         "schema": _SCHEMA_VERSION,
         "source": str(source_root.resolve()),
         "cmake": str(cmake_path),
         "cmake_mtime_ns": cmake_stat.st_mtime_ns,
         "cmake_size": cmake_stat.st_size,
+        "ninja": str(ninja_path),
+        "ninja_mtime_ns": ninja_stat.st_mtime_ns,
+        "ninja_size": ninja_stat.st_size,
         "configuration": _configuration_name(config),
         "architecture": config.architecture,
     }
@@ -88,10 +97,13 @@ def _configure(
             str(source_root),
             "-B",
             str(build_root),
+            "-G",
+            "Ninja",
+            f"-DCMAKE_MAKE_PROGRAM={ninja}",
             f"-DCMAKE_BUILD_TYPE={_configuration_name(config)}",
             "-DBUILD_TESTING=OFF",
         ]
-        run(arguments, cwd=source_root, capture=True)
+        run(arguments, cwd=source_root, environment=environment, capture=True)
         temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(fingerprint, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, state_path)
@@ -170,13 +182,13 @@ def project_import(
     package_name: str,
 ) -> ProjectSpec:
     """Configure CMake once, read its File API graph, and expose buildable targets."""
-    cmake = shutil.which("cmake")
-    if cmake is None:
-        raise ConfigurationError(
-            f"Package {package_name} uses CMake, but cmake is not available; install CMake or provide an overlay"
-        )
-    build_root = state_root / package_name / _state_key(config) / "cmake"
-    reply_root, index = _configure(source_root, build_root, config, cmake)
+    tool_root = state_root.parent
+    cmake = str(cmake_resolve(tool_root))
+    ninja = str(ninja_resolve(tool_root))
+    environment = dict(toolchain_resolve(config, tool_root).environment)
+    source_key = hashlib.sha256(str(source_root.resolve()).encode("utf-8")).hexdigest()[:16]
+    build_root = state_root / package_name / _state_key(config) / "cmake" / source_key
+    reply_root, index = _configure(source_root, build_root, config, cmake, ninja, environment)
     codemodel = _json_read(reply_root / _codemodel_file(index))
     configuration = _selected_configuration(codemodel, _configuration_name(config))
     entries = configuration.get("targets")

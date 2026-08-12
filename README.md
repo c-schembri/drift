@@ -47,7 +47,7 @@ py -3.12 drift.py test path/to/project
 
 After installing Drift as a command, use `drift build` inside a project or `drift build path/to/project` from elsewhere. `--root` remains available for scripts that prefer an explicit option.
 
-Ninja 1.13.1 is downloaded from its official GitHub release, checked against a pinned SHA-256 digest, and stored under `.drift/tools`. Set `DRIFT_NINJA` to use an explicitly managed executable instead.
+Ninja 1.13.1 and CMake 3.31.6 are downloaded on demand from their official releases, checked against pinned SHA-256 digests, and stored under `.drift/tools`. CMake is fetched only when a dependency requires its adapter. Set `DRIFT_NINJA` or `DRIFT_CMAKE` to use explicitly managed executables instead.
 
 ## Commands
 

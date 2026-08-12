@@ -5,12 +5,21 @@ from pathlib import Path
 import pytest
 
 from driftbuild.api import BuildConfig
+from driftbuild.bootstrap import ninja_resolve
 from driftbuild.cmake import project_import
 
 
-def test_cmake_file_api_imports_buildable_graph_and_default(tmp_path: Path) -> None:
-    if shutil.which("cmake") is None:
+@pytest.fixture(autouse=True)
+def _installed_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    cmake = shutil.which("cmake")
+    if cmake is None:
         pytest.skip("cmake is unavailable")
+    repository = Path(__file__).parents[1]
+    monkeypatch.setenv("DRIFT_CMAKE", cmake)
+    monkeypatch.setenv("DRIFT_NINJA", str(ninja_resolve(repository / ".drift")))
+
+
+def test_cmake_file_api_imports_buildable_graph_and_default(tmp_path: Path) -> None:
     source = tmp_path / "source"
     (source / "include").mkdir(parents=True)
     (source / "include" / "sample.h").write_text("int sample(void);\n", encoding="utf-8")
@@ -37,8 +46,6 @@ target_include_directories(sample PUBLIC include)
 
 
 def test_cmake_file_api_configuration_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    if shutil.which("cmake") is None:
-        pytest.skip("cmake is unavailable")
     source = tmp_path / "source"
     source.mkdir()
     (source / "sample.c").write_text("int sample(void) { return 1; }\n", encoding="utf-8")

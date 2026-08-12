@@ -49,6 +49,9 @@ Windows it can translate a matching Visual C++ project and its references direct
 CMake projects it configures once out of tree, reads the CMake File API codemodel, and caches the normalized graph. CMake
 builds remain behind explicit Ninja action edges, so no-op Drift builds do not rerun them.
 
+The CMake adapter uses Drift's pinned, checksum-verified CMake distribution. Consumers do not need to install CMake or
+Ninja separately. Adapter tools are downloaded on demand and cached under `.drift/tools`.
+
 When a repository exports several unrelated libraries and no default can be inferred, select one explicitly with
 `package.target("upstream-target")`. `build=api.msbuild(...)` remains an escape hatch for ambiguous Visual C++ trees;
 it is not expected in ordinary package declarations.

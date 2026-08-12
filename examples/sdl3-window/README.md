@@ -15,4 +15,5 @@ drift run -- --timeout-ms 1000
 ```
 
 On Windows, Drift imports SDL's checked-in Visual C++ project directly. On Linux and macOS it uses CMake's File API,
-caches the configured graph, and delegates only the dependency build to CMake.
+caches the configured graph, and delegates only the dependency build to Drift's pinned CMake distribution. CMake and
+Ninja do not need to be installed separately.

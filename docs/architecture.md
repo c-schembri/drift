@@ -14,7 +14,7 @@ Drift separates project policy from execution in seven stages:
 
 Project-generated state lives in `.drift`. Verified package sources live in a shared content-addressed store under `DRIFT_HOME/store`, the platform cache directory when `DRIFT_HOME` is unset. Configuration directories are keyed by platform, architecture, compiler selection, and build type. File discovery is sorted, root-confined, excludes symlinks, and rejects case collisions. Generated files are replaced only when their bytes change, preserving no-op performance.
 
-The runtime uses only the Python standard library. Ninja is the only bootstrapped executable; its version and archive digests are fixed in `bootstrap.py`. Compiler discovery is host-only in v0.
+The runtime uses only the Python standard library. Build-system adapters bootstrap pinned, checksum-verified tools on demand; Ninja and CMake versions and archive digests are fixed in `bootstrap.py`. Compiler discovery is host-only in v0.
 
 ## Boundaries
 
