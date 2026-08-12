@@ -162,3 +162,26 @@ def project_import(root: Path, config: BuildConfig, build: MsbuildProject) -> Pr
         dependencies=(system,),
     )
     return api.project(project_name, defaults=(target,))
+
+
+def project_discover(root: Path, config: BuildConfig, package_name: str) -> ProjectSpec:
+    """Discover a conventional native project in a package source tree."""
+    sdl_project = root / "VisualC" / "SDL" / "SDL.vcxproj"
+    if sdl_project.is_file() and (root / "include" / "SDL3" / "SDL.h").is_file():
+        return project_import(
+            root,
+            config,
+            MsbuildProject(Path("VisualC/SDL/SDL.vcxproj"), "static_library", ("SDL_STATIC_LIB",)),
+        )
+
+    projects = sorted(root.rglob("*.vcxproj"), key=lambda path: path.relative_to(root).as_posix())
+    if len(projects) == 1:
+        return project_import(root, config, MsbuildProject(projects[0].relative_to(root)))
+
+    normalized_name = re.sub(r"[^a-z0-9]", "", package_name.casefold())
+    matches = [path for path in projects if re.sub(r"[^a-z0-9]", "", path.stem.casefold()) == normalized_name]
+    if len(matches) == 1:
+        return project_import(root, config, MsbuildProject(matches[0].relative_to(root)))
+    raise ConfigurationError(
+        f"Cannot determine how to build package {package_name}; add a Drift provider, supported project, or overlay"
+    )

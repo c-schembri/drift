@@ -651,7 +651,12 @@ def packages_compose(
 
             dependency_project = project_import(package_root, config, package.build)
         elif package.overlay is None:
-            dependency_project = project_load(package_root, config)
+            if (package_root / "drift.toml").is_file():
+                dependency_project = project_load(package_root, config)
+            else:
+                from driftbuild.msbuild import project_discover
+
+                dependency_project = project_discover(package_root, config, package.name)
         else:
             dependency_project = _overlay_load(root / package.overlay, package_root, config, package.name)
         targets = _package_project_transform(package, package_root, dependency_project)
@@ -660,6 +665,11 @@ def packages_compose(
             ((package.name, original.name), transformed.name)
             for original, transformed in zip(dependency_project.targets, targets, strict=True)
         )
+        default_names = [reference.name for reference in dependency_project.defaults]
+        if len(default_names) == 1:
+            exported[(package.name, "")] = _package_target_name(package.name, default_names[0])
+        elif not default_names and len(dependency_project.targets) == 1:
+            exported[(package.name, "")] = targets[0].name
 
     local_targets: list[TargetSpec] = []
     for target in project.targets:
@@ -671,6 +681,8 @@ def packages_compose(
             key = dependency.target.package, dependency.target.target
             selected = exported.get(key)
             if selected is None:
+                if key[1] == "":
+                    raise ConfigurationError(f"Package {key[0]} does not have one unambiguous default target")
                 raise ConfigurationError(f"Package target does not exist: @{key[0]}//{key[1]}")
             dependencies.append(TargetDependency(TargetRef(selected), dependency.visibility))
         local_targets.append(replace(target, dependencies=tuple(dependencies)))

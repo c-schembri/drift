@@ -4,7 +4,7 @@
       "content_sha256": "e61a63c5bb35959af4d9d4eb140e13c108495010c0f0d7360a6ef3b928eb3a6a",
       "name": "sdl3",
       "overlay": null,
-      "request_sha256": "f0d42894b761027906a2b334490a99e3e1cdcb88fc5b8cc7d23dd397f477a148",
+      "request_sha256": "81f3b98d468c1d60bb8c983c40c9d4e26331315c8bba061ea0515e4331561baf",
       "source": {
         "kind": "git",
         "revision": "8e37db5e797b6167f3a00d697d816a684bd259c7",

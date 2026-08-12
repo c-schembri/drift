@@ -4,6 +4,17 @@ Drift packages are immutable external source projects. Package declarations do n
 providers. `drift lock` materializes each exact source, records its verified content digest in `drift.lock`, and makes
 subsequent builds reproducible.
 
+For a recognized package, declare only its identity and pinned source. Drift discovers how to build it and the package
+handle selects its default target:
+
+```python
+sdl = api.package(
+    "sdl3",
+    source=api.git("https://github.com/libsdl-org/SDL.git", "0123456789abcdef0123456789abcdef01234567"),
+)
+app = api.executable("app", sources=api.files("main.c"), dependencies=(api.private(sdl),))
+```
+
 ## Declaring a package
 
 A package can contain its own `drift.toml` and provider:
@@ -39,7 +50,8 @@ fmt = api.package(
 )
 ```
 
-An upstream Visual C++ project can be consumed without a handwritten overlay or an MSBuild invocation:
+For an ambiguous repository, an upstream Visual C++ project can be selected without a handwritten overlay or an
+MSBuild invocation:
 
 ```python
 sdl = api.package(

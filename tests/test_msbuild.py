@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from driftbuild.api import BuildConfig, ProjectApi
+from driftbuild.api import BuildConfig, PackageTargetRef, ProjectApi
 from driftbuild.model import Dependency
-from driftbuild.msbuild import project_import
+from driftbuild.msbuild import project_discover, project_import
 
 
 def test_msbuild_imports_selected_native_configuration(tmp_path: Path) -> None:
@@ -64,3 +64,29 @@ def test_package_accepts_msbuild_description_without_local_overlay(tmp_path: Pat
 
     assert package.overlay is None
     assert package.build == build
+
+
+def test_single_msbuild_project_is_discovered_and_package_selects_its_default(tmp_path: Path) -> None:
+    (tmp_path / "sample.c").write_text("int sample(void) { return 1; }\n", encoding="utf-8")
+    (tmp_path / "sample.vcxproj").write_text(
+        r"""<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><ProjectName>sample</ProjectName></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <ItemGroup><ClCompile Include="sample.c" /></ItemGroup>
+</Project>
+""",
+        encoding="utf-8",
+    )
+    config = BuildConfig("win32", architecture="x86_64", compiler="msvc", build_type="debug")
+
+    imported = project_discover(tmp_path, config, "sample")
+    api = ProjectApi(tmp_path, config)
+    package = api.package("sample", source=api.git("https://example.com/sample.git", "a" * 40))
+    dependency = api.private(package)
+
+    assert imported.targets[0].name == "sample"
+    assert imported.targets[0].kind == "static_library"
+    assert isinstance(dependency.target, PackageTargetRef)
+    assert dependency.target.target == ""

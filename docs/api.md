@@ -26,6 +26,10 @@ Use `api.public(target)` when a dependency's compile interface should propagate 
 `package.target("name")`, then pass it to `api.public(...)` or `api.private(...)`. See the [package guide](packages.md)
 for locking, local overlays, offline operation, and current limitations.
 
+Pass a package handle directly to `api.public(...)` or `api.private(...)` to consume its single default target. Drift
+first looks for an upstream Drift provider, then detects supported conventional native projects. Explicit target and
+build descriptions are escape hatches for ambiguous packages, not routine dependency boilerplate.
+
 `api.msbuild(project_file, ...)` imports the native C/C++ subset of an upstream `.vcxproj` directly into Drift. Pass it
 as `package(..., build=...)`; Drift reads the selected source list and compile/link interface but never invokes MSBuild.
 

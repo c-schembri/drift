@@ -242,12 +242,16 @@ class ProjectApi:
         self._packages[name] = PackageSpec(name, source, overlay_path, build)
         return PackageRef(name)
 
-    def public(self, target: TargetRef | PackageTargetRef) -> TargetDependency:
+    def public(self, target: TargetRef | PackageTargetRef | PackageRef) -> TargetDependency:
         """Expose a target's compile and link interface to consumers."""
+        if isinstance(target, PackageRef):
+            target = PackageTargetRef(target.name, "")
         return TargetDependency(target, "public")
 
-    def private(self, target: TargetRef | PackageTargetRef) -> TargetDependency:
+    def private(self, target: TargetRef | PackageTargetRef | PackageRef) -> TargetDependency:
         """Use a target without exposing its compile interface to consumers."""
+        if isinstance(target, PackageRef):
+            target = PackageTargetRef(target.name, "")
         return TargetDependency(target, "private")
 
     def output(self, target: TargetRef, path: str | os.PathLike[str] | None = None) -> Artifact:
