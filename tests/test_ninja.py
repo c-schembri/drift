@@ -88,3 +88,17 @@ def test_custom_action_emits_pool_and_dependency_inputs(tmp_path: Path) -> None:
     assert "pool generator\n  depth = 1" in ninja
     assert "pool = generator" in ninja
     assert "input.txt" in ninja
+
+
+def test_objective_c_source_is_compiled_with_c_compiler(tmp_path: Path) -> None:
+    (tmp_path / "window.m").write_text("int window(void) { return 1; }", encoding="utf-8")
+    api = ProjectApi(tmp_path, BuildConfig("darwin", compiler="clang"))
+    library = api.static_library("window", sources=api.files("window.m"))
+    project = api.project("fixture", defaults=(library,))
+    toolchain = Toolchain("clang", "clang", "clang++", "clang++", "ar", {}, ".o", "", "lib", ".a", "lib", ".dylib")
+
+    generated = generate(project, tmp_path, tmp_path / ".drift", api.config, toolchain)
+    database = json.loads(generated.compilation_database.read_text(encoding="utf-8"))
+
+    assert database[0]["command"].startswith("clang ")
+    assert database[0]["file"].endswith("window.m")

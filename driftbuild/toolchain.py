@@ -130,7 +130,7 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
     if missing:
         raise ConfigurationError(f"{family} toolchain is incomplete; missing: {', '.join(missing)}")
     executable_suffix = ".exe" if os.name == "nt" else ""
-    shared_suffix = ".dll" if os.name == "nt" else ".so"
+    shared_suffix = ".dll" if os.name == "nt" else ".dylib" if config.platform == "darwin" else ".so"
     return Toolchain(
         family,
         cc,

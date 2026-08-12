@@ -27,3 +27,6 @@ jobs:
       - run: uv run pytest
         env:
           DRIFT_TEST_COMPILER: ${{ matrix.compiler }}
+      - name: Build SDL3 example
+        if: matrix.compiler == 'auto'
+        run: uv run drift build examples/sdl3-window

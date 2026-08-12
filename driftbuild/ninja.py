@@ -264,11 +264,11 @@ def generate(
         objects: list[Path] = []
         for index, source in enumerate(target.sources):
             source_path = _source_path(root, source, outputs)
-            if source_path.suffix.lower() not in (".c", ".cc", ".cpp", ".cxx"):
+            if source_path.suffix.lower() not in (".c", ".cc", ".cpp", ".cxx", ".m", ".mm"):
                 continue
             object_path = build_root / "obj" / target.name / f"{index}-{source_path.stem}{toolchain.object_suffix}"
             object_path.parent.mkdir(parents=True, exist_ok=True)
-            compiler = toolchain.cc if source_path.suffix.lower() == ".c" else toolchain.cxx
+            compiler = toolchain.cc if source_path.suffix.lower() in (".c", ".m") else toolchain.cxx
             flags = _compile_flags(target, targets, root, config, toolchain)
             if toolchain.family == "msvc":
                 arguments = [compiler, "/nologo", "/showIncludes", "/c", str(source_path), f"/Fo{object_path}", *flags]

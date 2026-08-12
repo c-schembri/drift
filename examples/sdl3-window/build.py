@@ -8,13 +8,10 @@ def project(api: ProjectApi):
         "sdl3",
         source=api.git("https://github.com/libsdl-org/SDL.git", SDL_REVISION),
     )
-    if api.config.platform != "win32":
-        return api.project("sdl3-window")
-
     window = api.executable(
         "sdl3-window",
         sources=api.files("src/main.c"),
         dependencies=(api.private(sdl3),),
-        link_arguments=("/SUBSYSTEM:WINDOWS",),
+        link_arguments=("/SUBSYSTEM:WINDOWS",) if api.config.platform == "win32" else (),
     )
     return api.project("sdl3-window", defaults=(window,))

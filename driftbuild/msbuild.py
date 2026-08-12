@@ -168,11 +168,9 @@ def project_discover(root: Path, config: BuildConfig, package_name: str) -> Proj
     """Discover a conventional native project in a package source tree."""
     sdl_project = root / "VisualC" / "SDL" / "SDL.vcxproj"
     if sdl_project.is_file() and (root / "include" / "SDL3" / "SDL.h").is_file():
-        return project_import(
-            root,
-            config,
-            MsbuildProject(Path("VisualC/SDL/SDL.vcxproj"), "static_library", ("SDL_STATIC_LIB",)),
-        )
+        from driftbuild.sdl import project_import as sdl_import
+
+        return sdl_import(root, config)
 
     projects = sorted(root.rglob("*.vcxproj"), key=lambda path: path.relative_to(root).as_posix())
     if len(projects) == 1:

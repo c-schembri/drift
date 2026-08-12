@@ -62,8 +62,9 @@ sdl = api.package(
 ```
 
 The importer selects the requested Debug/Release architecture, source and header items, include paths, definitions,
-compiler options, disabled warnings, libraries, and native target kind. A target-kind override supports upstreams that
-only ship a shared-library project but can also be compiled statically.
+compiler options, disabled warnings, libraries, and native target kind. Package detection is host-aware: a package may
+resolve through different native importers on Windows, Linux, and macOS while keeping one declaration and lock entry. A
+target-kind override supports upstreams that only ship a shared-library project but can also be compiled statically.
 
 The overlay is trusted code owned by the root project. It receives a `ProjectApi` rooted at the verified package source,
 so an upstream project does not need to know about Drift:
