@@ -26,6 +26,9 @@ Use `api.public(target)` when a dependency's compile interface should propagate 
 `package.target("name")`, then pass it to `api.public(...)` or `api.private(...)`. See the [package guide](packages.md)
 for locking, local overlays, offline operation, and current limitations.
 
+`api.msbuild(project_file, ...)` imports the native C/C++ subset of an upstream `.vcxproj` directly into Drift. Pass it
+as `package(..., build=...)`; Drift reads the selected source list and compile/link interface but never invokes MSBuild.
+
 `api.command_action(...)` defines a custom action with explicit inputs, outputs, environment, depfile policy, timeout, and Ninja pool. Register constrained pools with `api.pool(PoolSpec(...))`. Command arguments may use the exact tokens `{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap the action with `custom_target` or `external_library`. `runtime_bundle` copies explicit files beside a stamp target. `alias` groups targets.
 
 ## Platform services

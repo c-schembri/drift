@@ -3,8 +3,8 @@
     {
       "content_sha256": "e61a63c5bb35959af4d9d4eb140e13c108495010c0f0d7360a6ef3b928eb3a6a",
       "name": "sdl3",
-      "overlay": "dependencies/sdl3.py",
-      "request_sha256": "7c3fbdc429d31cc18a362cab1cf6d6f45b04374543d8392c988782b02592e0fc",
+      "overlay": null,
+      "request_sha256": "f0d42894b761027906a2b334490a99e3e1cdcb88fc5b8cc7d23dd397f477a148",
       "source": {
         "kind": "git",
         "revision": "8e37db5e797b6167f3a00d697d816a684bd259c7",

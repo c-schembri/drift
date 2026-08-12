@@ -28,6 +28,8 @@ from driftbuild.model import (
     GitHubSpec,
     GitSource,
     LinkInterface,
+    MsbuildProject,
+    PackageBuild,
     PackageRef,
     PackageSource,
     PackageSpec,
@@ -208,14 +210,36 @@ class ProjectApi:
             raise ConfigurationError("Git revision must be a full lowercase commit hash")
         return GitSource(url, revision)
 
-    def package(self, name: str, *, source: PackageSource, overlay: str | os.PathLike[str] | None = None) -> PackageRef:
+    def msbuild(
+        self,
+        project_file: str | os.PathLike[str],
+        *,
+        kind: TargetKind | None = None,
+        defines: Sequence[str] = (),
+    ) -> MsbuildProject:
+        """Import one upstream Visual C++ project without invoking MSBuild."""
+        if kind not in (None, "static_library", "shared_library", "executable"):
+            raise ConfigurationError(f"Unsupported MSBuild target kind: {kind}")
+        path = _safe_relative(self.root, project_file, must_exist=False)
+        return MsbuildProject(path, kind, tuple(defines))
+
+    def package(
+        self,
+        name: str,
+        *,
+        source: PackageSource,
+        overlay: str | os.PathLike[str] | None = None,
+        build: PackageBuild | None = None,
+    ) -> PackageRef:
         """Declare one pinned external project without fetching or executing it."""
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None or name in (".", ".."):
             raise ConfigurationError(f"Invalid package name: {name!r}")
         if any(existing.casefold() == name.casefold() for existing in self._packages):
             raise ConfigurationError(f"Duplicate package name: {name}")
+        if overlay is not None and build is not None:
+            raise ConfigurationError("Package overlay and build cannot both be specified")
         overlay_path = _safe_relative(self.root, overlay, must_exist=True) if overlay is not None else None
-        self._packages[name] = PackageSpec(name, source, overlay_path)
+        self._packages[name] = PackageSpec(name, source, overlay_path, build)
         return PackageRef(name)
 
     def public(self, target: TargetRef | PackageTargetRef) -> TargetDependency:

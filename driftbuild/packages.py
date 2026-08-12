@@ -29,6 +29,7 @@ from driftbuild.model import (
     Dependency,
     GitSource,
     LinkInterface,
+    MsbuildProject,
     PackageSpec,
     PackageTargetRef,
     ProjectSpec,
@@ -126,6 +127,16 @@ def _request_sha256(package: PackageSpec, root: Path) -> str:
         "source": _source_payload(package.source),
         "overlay": package.overlay.as_posix() if package.overlay is not None else None,
         "overlay_sha256": overlay_sha256,
+        "build": (
+            {
+                "kind": "msbuild",
+                "project_file": package.build.project_file.as_posix(),
+                "target_kind": package.build.kind,
+                "defines": package.build.defines,
+            }
+            if isinstance(package.build, MsbuildProject)
+            else None
+        ),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -635,7 +646,11 @@ def packages_compose(
     exported: dict[tuple[str, str], str] = {}
     for package in sorted(project.packages, key=lambda item: item.name):
         package_root = package_roots[package.name]
-        if package.overlay is None:
+        if package.build is not None:
+            from driftbuild.msbuild import project_import
+
+            dependency_project = project_import(package_root, config, package.build)
+        elif package.overlay is None:
             dependency_project = project_load(package_root, config)
         else:
             dependency_project = _overlay_load(root / package.overlay, package_root, config, package.name)

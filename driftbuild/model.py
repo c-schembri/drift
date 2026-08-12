@@ -88,12 +88,25 @@ PackageSource: TypeAlias = ArchiveSource | GitSource
 
 
 @dataclass(frozen=True)
+class MsbuildProject:
+    """An upstream Visual C++ project imported as a Drift target."""
+
+    project_file: Path
+    kind: TargetKind | None = None
+    defines: tuple[str, ...] = ()
+
+
+PackageBuild: TypeAlias = MsbuildProject
+
+
+@dataclass(frozen=True)
 class PackageSpec:
-    """Pinned external project and optional trusted local overlay provider."""
+    """Pinned external project and its optional build description."""
 
     name: str
     source: PackageSource
     overlay: Path | None = None
+    build: PackageBuild | None = None
 
 
 @dataclass(frozen=True)

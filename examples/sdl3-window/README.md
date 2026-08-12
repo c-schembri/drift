@@ -14,5 +14,5 @@ Close the window normally to stop the program. For automated smoke checks, pass 
 drift run -- --timeout-ms 1000
 ```
 
-The example is currently Windows-only. Its local overlay translates SDL's checked-in `VisualC/SDL/SDL.vcxproj` source
-inventory into a Drift static-library target and exposes SDL's headers and required Win32 system libraries.
+The example is currently Windows-only. Drift imports SDL's checked-in `VisualC/SDL/SDL.vcxproj` as a native Ninja
+target; MSBuild is not invoked.

@@ -7,7 +7,11 @@ def project(api: ProjectApi):
     sdl3 = api.package(
         "sdl3",
         source=api.git("https://github.com/libsdl-org/SDL.git", SDL_REVISION),
-        overlay="dependencies/sdl3.py",
+        build=api.msbuild(
+            "VisualC/SDL/SDL.vcxproj",
+            kind="static_library",
+            defines=("SDL_STATIC_LIB",),
+        ),
     )
     if api.config.platform != "win32":
         return api.project("sdl3-window")
@@ -15,7 +19,7 @@ def project(api: ProjectApi):
     window = api.executable(
         "sdl3-window",
         sources=api.files("src/main.c"),
-        dependencies=(api.private(sdl3.target("SDL3-static")),),
+        dependencies=(api.private(sdl3.target("SDL3")),),
         link_arguments=("/SUBSYSTEM:WINDOWS",),
     )
     return api.project("sdl3-window", defaults=(window,))
