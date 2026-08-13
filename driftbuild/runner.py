@@ -45,7 +45,7 @@ def build_and_run(
     target_name: str | None = None,
     arguments: Sequence[str] = (),
 ) -> int:
-    """Build one selected executable and run it from the project root."""
+    """Build one selected executable and run it from its output directory."""
     target = executable_select(project, target_name)
     result = build(project, root, state_root, config, (target.name,))
     assert result.timing is not None
@@ -80,5 +80,5 @@ def build_and_run(
         environment["LD_LIBRARY_PATH"] = os.pathsep.join(
             (runtime_path, environment.get("LD_LIBRARY_PATH", ""))
         )
-    completed = run((str(executable), *arguments), cwd=root, environment=environment, check=False)
+    completed = run((str(executable), *arguments), cwd=executable.parent, environment=environment, check=False)
     return completed.returncode
