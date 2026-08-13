@@ -33,10 +33,11 @@ jobs:
       - name: Install Emscripten
         if: matrix.profile == 'emscripten'
         run: sudo apt-get update && sudo apt-get install -y emscripten
+      - name: Select Android NDK
+        if: matrix.profile == 'android'
+        run: echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
       - name: Build profile
         run: uv run drift --profile ${{ matrix.profile }} build examples/cross-smoke
-        env:
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_LATEST_HOME }}
 
   windows-clang-cl:
     runs-on: windows-latest

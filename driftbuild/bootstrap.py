@@ -12,6 +12,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import venv
 import zipfile
@@ -67,6 +68,23 @@ _VCPKG_BINARIES = {
     ("darwin", "x86_64"): ("vcpkg-macos", "352a52151f57e51b0298bdd6f6a825cd4413d3b88d258f456193daf783b3ceec"),
     ("darwin", "arm64"): ("vcpkg-macos", "352a52151f57e51b0298bdd6f6a825cd4413d3b88d258f456193daf783b3ceec"),
 }
+
+
+def _download_file(url: str, destination: Path, label: str) -> None:
+    error: OSError | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                with destination.open("wb") as output:
+                    shutil.copyfileobj(response, output)
+            return
+        except OSError as caught:
+            error = caught
+            destination.unlink(missing_ok=True)
+            if attempt < 2:
+                time.sleep(2**attempt)
+    assert error is not None
+    raise ConfigurationError(f"Cannot download pinned {label}: {error}") from error
 
 
 def _meson_wrapper_write(install: Path) -> Path:
@@ -258,12 +276,7 @@ def _tool_resolve(
     with tempfile.TemporaryDirectory(prefix=f"drift-{tool}-", dir=install.parent) as temporary:
         temporary_path = Path(temporary)
         archive = temporary_path / description.name
-        try:
-            with urllib.request.urlopen(f"{release_url}/{description.name}", timeout=120) as response:
-                with archive.open("wb") as output:
-                    shutil.copyfileobj(response, output)
-        except OSError as error:
-            raise ConfigurationError(f"Cannot download pinned {tool} {version}: {error}") from error
+        _download_file(f"{release_url}/{description.name}", archive, f"{tool} {version}")
         actual = hashlib.sha256(archive.read_bytes()).hexdigest()
         if actual != description.sha256:
             raise ConfigurationError(f"{tool} archive checksum mismatch: expected {description.sha256}, got {actual}")
@@ -335,12 +348,7 @@ def meson_command(_state_root: Path, override: str | None = None) -> tuple[str, 
     with tempfile.TemporaryDirectory(prefix="drift-meson-", dir=install.parent) as temporary:
         temporary_path = Path(temporary)
         wheel = temporary_path / f"meson-{MESON_VERSION}.whl"
-        try:
-            with urllib.request.urlopen(_MESON_WHEEL, timeout=120) as response:
-                with wheel.open("wb") as output:
-                    shutil.copyfileobj(response, output)
-        except OSError as error:
-            raise ConfigurationError(f"Cannot download pinned Meson {MESON_VERSION}: {error}") from error
+        _download_file(_MESON_WHEEL, wheel, f"Meson {MESON_VERSION}")
         actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
         if actual != _MESON_WHEEL_SHA256:
             raise ConfigurationError(f"Meson wheel checksum mismatch: expected {_MESON_WHEEL_SHA256}, got {actual}")
@@ -506,12 +514,7 @@ def vcpkg_resolve(_state_root: Path, override: str | None = None) -> Path:
         bundle_url = (
             f"https://github.com/microsoft/vcpkg-tool/releases/download/{VCPKG_VERSION}/vcpkg-standalone-bundle.tar.gz"
         )
-        try:
-            with urllib.request.urlopen(bundle_url, timeout=120) as response:
-                with bundle.open("wb") as output:
-                    shutil.copyfileobj(response, output)
-        except OSError as error:
-            raise ConfigurationError(f"Cannot download pinned vcpkg {VCPKG_VERSION} bundle: {error}") from error
+        _download_file(bundle_url, bundle, f"vcpkg {VCPKG_VERSION} bundle")
         bundle_actual = hashlib.sha256(bundle.read_bytes()).hexdigest()
         if bundle_actual != _VCPKG_BUNDLE_SHA256:
             bundle.unlink(missing_ok=True)
@@ -522,12 +525,7 @@ def vcpkg_resolve(_state_root: Path, override: str | None = None) -> Path:
         bundle.unlink()
     temporary = install / f".{asset}.download"
     url = f"https://github.com/microsoft/vcpkg-tool/releases/download/{VCPKG_VERSION}/{asset}"
-    try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            with temporary.open("wb") as output:
-                shutil.copyfileobj(response, output)
-    except OSError as error:
-        raise ConfigurationError(f"Cannot download pinned vcpkg {VCPKG_VERSION}: {error}") from error
+    _download_file(url, temporary, f"vcpkg {VCPKG_VERSION}")
     actual = hashlib.sha256(temporary.read_bytes()).hexdigest()
     if actual != expected:
         temporary.unlink(missing_ok=True)

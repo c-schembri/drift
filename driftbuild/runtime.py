@@ -32,7 +32,7 @@ def module_command(module: str) -> tuple[str, ...]:
     """Return a command that re-enters a trusted Drift helper module."""
     if module not in _INTERNAL_MODULES:
         raise ValueError(f"Unsupported internal Drift module: {module}")
-    executable = str(Path(sys.executable).resolve())
+    executable = sys.executable
     if getattr(sys, "frozen", False):
         return executable, _INTERNAL_MARKER, module
     launcher = Path(sys.argv[0]).resolve()
@@ -43,7 +43,7 @@ def module_command(module: str) -> tuple[str, ...]:
 
 def script_command(script: Path) -> tuple[str, ...]:
     """Return a command for one managed Python tool entry point."""
-    executable = str(Path(sys.executable).resolve())
+    executable = sys.executable
     if getattr(sys, "frozen", False):
         return executable, _SCRIPT_MARKER, str(script.resolve())
     return executable, str(script.resolve())
