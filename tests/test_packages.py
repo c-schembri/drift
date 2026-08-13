@@ -229,6 +229,16 @@ def test_archive_files_receive_one_deterministic_timestamp(tmp_path: Path) -> No
     assert (source / "generated").stat().st_mtime_ns == (source / "source").stat().st_mtime_ns
 
 
+def test_vcpkg_source_identity_uses_platform_independent_newlines(tmp_path: Path) -> None:
+    api = ProjectApi(tmp_path, BuildConfig(sys.platform))
+    api.package("zlib", source=api.vcpkg("zlib", "1" * 40))
+
+    lock = package_lock_create(api.project("sample"), tmp_path, tmp_path / "store")
+    source = tmp_path / "store" / "sources" / lock.packages[0].content_sha256
+
+    assert b"\r\n" not in (source / "drift-vcpkg.json").read_bytes()
+
+
 def test_git_package_records_exact_tree(tmp_path: Path) -> None:
     git = shutil.which("git")
     if git is None:

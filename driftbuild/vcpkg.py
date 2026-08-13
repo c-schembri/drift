@@ -62,7 +62,9 @@ def _manifest_write(build_root: Path, source: VcpkgSource, features: tuple[str, 
     manifest: dict[str, object] = {"dependencies": [dependency]}
     if source.registry == "https://github.com/microsoft/vcpkg":
         manifest["builtin-baseline"] = source.baseline
-    (manifest_root / "vcpkg.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (manifest_root / "vcpkg.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
     if source.registry != "https://github.com/microsoft/vcpkg":
         configuration = {
             "default-registry": {
@@ -72,7 +74,7 @@ def _manifest_write(build_root: Path, source: VcpkgSource, features: tuple[str, 
             }
         }
         (manifest_root / "vcpkg-configuration.json").write_text(
-            json.dumps(configuration, indent=2) + "\n", encoding="utf-8"
+            json.dumps(configuration, indent=2) + "\n", encoding="utf-8", newline="\n"
         )
     return manifest_root
 

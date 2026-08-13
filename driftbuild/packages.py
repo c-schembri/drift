@@ -412,7 +412,9 @@ def _source_prepare(package: PackageSpec, temporary: Path, offline: bool, declar
             "features": package.source.features,
         }
         (source_root / "drift-vcpkg.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
     for patch in package.patches:
         _patch_apply(source_root, (declaration_root / patch).resolve())
