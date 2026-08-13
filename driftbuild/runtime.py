@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import runpy
 import sys
 from collections.abc import Callable, Sequence
@@ -52,6 +53,14 @@ def script_command(script: Path) -> tuple[str, ...]:
     return executable, str(script.resolve())
 
 
+def pip_command() -> tuple[str, ...]:
+    """Return a command that invokes Drift's bundled pip runtime."""
+    executable = sys.executable
+    if getattr(sys, "frozen", False):
+        return executable, _PIP_MARKER
+    return executable, "-m", "pip"
+
+
 def provider_command(root: Path, handler: str) -> tuple[str, ...]:
     """Return a command that invokes one project-owned provider handler."""
     executable = sys.executable
@@ -71,6 +80,44 @@ def _external_path(path: Path) -> None:
 
 def internal_dispatch(arguments: Sequence[str]) -> int | None:
     """Run a trusted helper request, or return None for a normal CLI invocation."""
+    project_site = os.environ.get("DRIFT_PROJECT_SITE")
+    if project_site:
+        for value in reversed(project_site.split(os.pathsep)):
+            if value:
+                _external_path(Path(value))
+    if arguments and arguments[0] == "-c":
+        if len(arguments) < 2:
+            raise ValueError("Python -c requires code")
+        _external_path(Path.cwd())
+        previous = sys.argv
+        sys.argv = ["-c", *arguments[2:]]
+        try:
+            namespace = {"__name__": "__main__", "__file__": None, "__builtins__": __builtins__}
+            exec(compile(arguments[1], "<string>", "exec"), namespace)
+        finally:
+            sys.argv = previous
+        return 0
+    if arguments and arguments[0] == "-m":
+        if len(arguments) < 2:
+            raise ValueError("Python -m requires a module")
+        _external_path(Path.cwd())
+        previous = sys.argv
+        sys.argv = [arguments[1], *arguments[2:]]
+        try:
+            runpy.run_module(arguments[1], run_name="__main__", alter_sys=True)
+        finally:
+            sys.argv = previous
+        return 0
+    if arguments and arguments[0].casefold().endswith((".py", ".pyw")):
+        script = Path(arguments[0]).resolve()
+        previous = sys.argv
+        sys.argv = [str(script), *arguments[1:]]
+        _external_path(script.parent)
+        try:
+            runpy.run_path(str(script), run_name="__main__")
+        finally:
+            sys.argv = previous
+        return 0
     if arguments and arguments[0] == _SCRIPT_MARKER:
         if len(arguments) < 2:
             raise ValueError("Managed Drift script path is missing")

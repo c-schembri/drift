@@ -4,7 +4,16 @@ import pytest
 
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate, transitive_targets
-from driftbuild.model import Deployment, MatrixSpec, ProjectSpec, TargetDependency, TargetRef, TargetSpec
+from driftbuild.model import (
+    Deployment,
+    MatrixSpec,
+    ProjectSpec,
+    SuiteSpec,
+    TargetDependency,
+    TargetRef,
+    TargetSpec,
+    TaskSpec,
+)
 
 
 def test_cycle_reports_the_complete_path() -> None:
@@ -52,4 +61,14 @@ def test_matrix_targets_are_validated_for_the_selected_operation() -> None:
     )
 
     with pytest.raises(ConfigurationError, match="unknown build targets"):
+        project_validate(project)
+
+
+def test_suite_tasks_cannot_recursively_reference_suites() -> None:
+    project = ProjectSpec(
+        "recursive",
+        suites=(SuiteSpec("full", (TaskSpec("again", test="full"),)),),
+    )
+
+    with pytest.raises(ConfigurationError, match="references unknown test: full"):
         project_validate(project)

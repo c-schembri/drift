@@ -19,8 +19,16 @@ support = api.static_library(
 app = api.executable("app", sources=api.files("src/main.cpp"), dependencies=(api.private(support),))
 ```
 
-Targets accept `precompiled_header="include/pch.h"`. Global sanitizer, coverage, LTO, warnings, and unity modes are
+Targets accept `precompiled_header="include/pch.h"`. Windows `.rc` sources are compiled and linked like other native
+sources when using an MSVC-compatible toolchain. Global sanitizer, coverage, LTO, warnings, and unity modes are
 configuration selections rather than provider branches, so the same declaration remains portable.
+
+Use `api.native_profile(...)` to share native settings across targets without creating an artificial library:
+
+```python
+windows = api.native_profile("windows", defines=("UNICODE",), link_arguments=("user32.lib",))
+app = api.executable("app", sources=api.files("main.cpp", "app.rc"), profiles=(windows,))
+```
 
 Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it. `api.pkg_config(name, static=False)` resolves the equivalent interface from a host-installed `.pc` package.
 
@@ -50,7 +58,8 @@ by the same bundle. `api.deploy(source, "plugins/name.dll")` maps one destinatio
 groups targets.
 
 `api.cargo(...)` adds Cargo-owned binaries or workspaces to the same target graph. Drift schedules Cargo through Ninja,
-maps its release build type, tracks Rust and manifest inputs, and leaves dependency compilation to Cargo's incremental
+maps its release build type, discovers every local workspace package through `cargo metadata`, tracks its Rust,
+manifest, lock, build-script, and Cargo configuration inputs through a depfile, and leaves compilation to Cargo's incremental
 cache. Set `run_target=` to make a Cargo binary available through `drift run`. Use
 `api.cargo_static_library(...)` when a native target links an explicit Cargo-produced archive:
 
@@ -81,6 +90,9 @@ the set can be narrowed with `checks=`.
 ## Platform services
 
 - `TaskSpec` declares workflow dependencies, subprocess or sync/async handler, retries, timeout, and resource locks.
+  A task may directly reference one `test=`, `matrix=`, or `targets=` operation, with optional `configuration=`
+  overrides, so suites do not need to launch nested Drift processes. `provider_command=` invokes a registered provider
+  command in-process.
 - `TestSpec(target=app)` builds and runs a target's declared `run_command`, or its first output by default. Add
   `arguments=`, or use `handler="tools.tests:probe"` for a project-owned test driver. `isolated=True` supplies a
   temporary home, app-data, config, and temp directory; `{temp}` in environment values resolves there.
@@ -110,6 +122,9 @@ workers = api.option("workers", value_type=int, default=4)
 Users select values with `-D flavor=retail`. Unknown, duplicate, malformed, and unsupported values fail during project
 loading. Declared options also form valid matrix axes.
 
+`api.find_program(...)` and `api.find_file(...)` resolve required host tools and files from declared roots or environment
+variables; programs also search `PATH`. Drift records the selected path and relevant environment in configuration state.
+
 `api.local_sdk(...)` imports a machine-local SDK from an environment variable or fallback root without embedding its
 layout in the project provider:
 
@@ -127,9 +142,37 @@ project option. `${root}`, `${project}`, `${platform}`, `${architecture}`, `${bu
 available in descriptor values. Descriptor timestamps and SDK-root environment variables invalidate Drift's warm
 configuration cache.
 
+Set `materialize_to=` and add a descriptor `materialize` recipe to make a minimal, project-owned SDK snapshot explicit:
+
+```python
+sdl = api.local_sdk(
+    "sdl3",
+    descriptor="sdk/sdl3.json",
+    environment=("SDL3_SDK",),
+    roots=("third_party/SDL",),
+    materialize_to="third_party/SDL",
+)
+```
+
+```json
+{"materialize": {"required": ["include", "lib"], "optional": ["LICENSE*"]}}
+```
+
+`drift sdk materialize` replaces each declared destination from those root-confined selections. Pass SDK names to
+materialize only a subset. The normal configure/build path never mutates SDK sources.
+
+Provider command implementations may import stable process, locking, copy, removal, environment, and timestamp helpers
+from `driftbuild.api`, including `run`, `OwnedProcess`, `FileLock`, `copy_file`, and `outputs_current`.
+
+`api.python_requirements("requirements.txt")` declares hashed Python dependencies needed by provider commands. Drift
+materializes them with its bundled pip into a content-addressed shared environment, activates them before command
+handlers run, and rejects a missing environment under `--offline`. Native Drift installations also re-enter their
+bundled Python runtime for project subprocesses using `sys.executable`, so project tooling does not need `uv` or a
+separate virtual environment.
+
 ## Project requirement
 
-Set `requires-drift = "==0.3.1"` in the manifest's `[project]` table to pin a project to one Drift release. Every
+Set `requires-drift = "==0.4.0"` in the manifest's `[project]` table to pin a project to one Drift release. Every
 provider-loading command validates the constraint. `drift bootstrap` checks it without loading the provider, and
 `drift bootstrap --install` installs an exact pinned release through Drift's verified self-updater.
 

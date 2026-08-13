@@ -15,7 +15,8 @@ from driftbuild.project import project_load
 from driftbuild.testing import tests_run
 
 
-def _configuration(base: BuildConfig, values: dict[str, str]) -> BuildConfig:
+def configuration_apply(base: BuildConfig, values: dict[str, str]) -> BuildConfig:
+    """Apply matrix-style values to one immutable build configuration."""
     definitions = dict(base.values)
     platform = base.platform
     architecture = base.architecture
@@ -70,7 +71,7 @@ def matrix_run(
         selected = dict(zip(names, combination, strict=True))
         label = ", ".join(f"{name}={value}" for name, value in selected.items())
         print(f"[{matrix.name}] {label}", flush=True)
-        config = _configuration(base_config, selected)
+        config = configuration_apply(base_config, selected)
         project = packages_compose(project_load(root, config), root, config, offline=offline)
         project_validate(project)
         if matrix.operation == "build":

@@ -43,3 +43,8 @@ def test_provider_command_reenters_frozen_drift(tmp_path: Path, monkeypatch: pyt
         str(tmp_path.resolve()),
         "build:generate",
     )
+
+
+def test_internal_dispatch_supports_python_code_reentry(capsys: pytest.CaptureFixture[str]) -> None:
+    assert internal_dispatch(("-c", "print('embedded python')")) == 0
+    assert capsys.readouterr().out == "embedded python\n"

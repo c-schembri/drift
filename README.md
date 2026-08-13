@@ -59,7 +59,7 @@ export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/drift/bin:$PATH"
 drift --version
 ```
 
-Add that export to your shell profile. Set `DRIFT_VERSION=0.3.1` when running either installer to select an exact
+Add that export to your shell profile. Set `DRIFT_VERSION=0.4.0` when running either installer to select an exact
 release. Native archives are currently published for Windows x86_64, Linux x86_64, and macOS arm64.
 
 Once installed, Drift updates itself without Python or uv:
@@ -86,7 +86,7 @@ hello/
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.3.1"
+requires-drift = "==0.4.0"
 ```
 
 `build.py` declares the graph through the supported `driftbuild.api` surface:
@@ -144,8 +144,9 @@ def project(api: ProjectApi):
 ```
 
 Drift supports object, static, shared, and executable targets; generated actions; aliases; precompiled headers;
-runtime files; and destination-preserving deployment. File inputs can be explicit with `api.files()` or discovered
-deterministically with `api.tree()`.
+Windows resource sources; runtime files; and destination-preserving deployment. `api.native_profile()` shares native
+settings across related targets without creating an artificial library. File inputs can be explicit with `api.files()`
+or discovered deterministically with `api.tree()`.
 
 See the [provider API reference](docs/api.md) for the complete target surface.
 
@@ -225,6 +226,7 @@ transitive packages, overlays, and security limits.
 | `drift output TARGET --json` | Return configured outputs for scripts and deployment tooling |
 | `drift doctor` | Check the compiler, Git, lock, package cache, and managed tools |
 | `drift graph` | Print the validated target graph as JSON |
+| `drift sdk materialize [names...]` | Replace declared local SDK snapshots from descriptor selections |
 
 Global configuration options come before the command:
 
@@ -261,11 +263,17 @@ Builds that execute work report wall-clock, configure, Ninja, compile, archive, 
 Project options are declared and typed in the provider, then selected with `-D name=value`. Target-bound tests and
 commands build their prerequisites and consume configured outputs without reconstructing `.drift` paths. Project-owned
 Python actions run through Drift's bundled runtime, including native installs that have no system Python. Composite
-suites keep dependency ordering and resource locks in the graph rather than in a custom scheduler.
+suites keep dependency ordering and resource locks in the graph rather than in a custom scheduler. Their tasks can
+reference declared tests, target builds, matrices, and provider commands directly, avoiding nested Drift processes.
+Projects with third-party Python command dependencies can declare a hashed requirements file with
+`api.python_requirements(...)`; Drift materializes and activates a shared environment with its bundled runtime, without
+requiring `uv`.
 
 Runtime deployment supports explicit mappings and preserved directory trees. Clean bundles remove only files they
 previously owned. Machine-local SDK layouts live in small JSON descriptors with platform and project-option variants;
-descriptor edits and SDK-root environment changes invalidate the warm configuration cache.
+descriptor edits and SDK-root environment changes invalidate the warm configuration cache. `api.find_program()` and
+`api.find_file()` make host tool discovery explicit and cache-aware. An SDK descriptor can also own the exact file
+selection used by the explicit `drift sdk materialize` command.
 
 ## Cargo
 
@@ -283,8 +291,10 @@ server = api.cargo(
 api.cargo_workspace("rust", manifest="Cargo.toml")
 ```
 
-Drift reads Cargo's JSON artifact stream, publishes stable outputs, and runs the exact emitted binary through
-`drift run`. Workspace declarations expose format, check, Clippy, and test checks to Drift workflows.
+Drift reads Cargo metadata to discover every local workspace package and feeds its sources, manifests, lockfile,
+build scripts, and Cargo configuration to Ninja through a depfile. It reads Cargo's JSON artifact stream, publishes
+stable outputs, and runs the exact emitted binary through `drift run`. Workspace declarations expose format, check,
+Clippy, and test checks to Drift workflows.
 
 ## IDEs
 
@@ -305,6 +315,7 @@ Drift, keeping command-line and IDE behavior aligned. See the [Visual Studio gui
 - `DRIFT_HOME/store` contains verified, content-addressed package sources.
 - `DRIFT_HOME/binaries` contains package builds shared across projects.
 - `DRIFT_HOME/tools` contains pinned tools fetched on demand.
+- `DRIFT_HOME/python` contains content-addressed provider-command Python environments.
 
 `DRIFT_HOME` defaults to `%LOCALAPPDATA%\drift` on Windows and `${XDG_CACHE_HOME:-$HOME/.cache}/drift` elsewhere.
 Drift never deletes a shared cache implicitly; `drift cache clean CATEGORY --yes` requires an explicit ownership
@@ -318,7 +329,7 @@ Projects can require an exact Drift release in `drift.toml`:
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.3.1"
+requires-drift = "==0.4.0"
 ```
 
 ```console

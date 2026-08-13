@@ -12,6 +12,53 @@ from pathlib import Path
 from typing import Any
 
 
+def _metadata_inputs(payload: object) -> tuple[Path, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    found: set[Path] = set()
+    workspace_root_value = payload.get("workspace_root")
+    if isinstance(workspace_root_value, str):
+        workspace_root = Path(workspace_root_value)
+        for relative_name in ("Cargo.lock", ".cargo/config", ".cargo/config.toml"):
+            candidate = workspace_root / relative_name
+            if candidate.is_file():
+                found.add(candidate.resolve())
+    packages = payload.get("packages", [])
+    if not isinstance(packages, list):
+        return tuple(sorted(found))
+    for package in packages:
+        if not isinstance(package, dict) or package.get("source") is not None:
+            continue
+        manifest_value = package.get("manifest_path")
+        if not isinstance(manifest_value, str):
+            continue
+        manifest = Path(manifest_value).resolve()
+        found.add(manifest)
+        package_root = manifest.parent
+        for candidate_path in package_root.rglob("*"):
+            if not candidate_path.is_file() or candidate_path.is_symlink():
+                continue
+            try:
+                relative_path = candidate_path.relative_to(package_root)
+            except ValueError:
+                continue
+            if any(part in (".git", ".drift", "target") for part in relative_path.parts):
+                continue
+            if candidate_path.suffix == ".rs" or candidate_path.name in ("Cargo.toml", "Cargo.lock", "build.rs"):
+                found.add(candidate_path.resolve())
+    return tuple(sorted(found, key=lambda path: path.as_posix().casefold()))
+
+
+def _depfile_write(path: Path, target: Path, inputs: tuple[Path, ...]) -> None:
+    def escape(value: Path) -> str:
+        return str(value.resolve()).replace("\\", "/").replace(":", "\\:").replace(" ", "\\ ")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(f"{escape(target)}: {' '.join(escape(value) for value in inputs)}\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def _same_file(source: Path, destination: Path) -> bool:
     if not destination.is_file():
         return False
@@ -62,6 +109,8 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--target-dir", type=Path, required=True)
     parser.add_argument("--release", action="store_true")
+    parser.add_argument("--depfile", type=Path, required=True)
+    parser.add_argument("--dep-target", type=Path, required=True)
     parser.add_argument("--workspace", action="store_true")
     parser.add_argument("--package", action="append", default=[])
     parser.add_argument("--bin", action="append", default=[])
@@ -74,6 +123,30 @@ def main() -> int:
     arguments = parser.parse_args()
     if len(arguments.artifact) != len(arguments.output):
         parser.error("--artifact and --output counts must match")
+
+    metadata_command = [
+        "cargo",
+        "metadata",
+        "--format-version=1",
+        "--manifest-path",
+        str(arguments.manifest),
+    ]
+    metadata = subprocess.run(
+        metadata_command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if metadata.returncode != 0:
+        print(metadata.stderr, end="", file=sys.stderr)
+        return metadata.returncode
+    try:
+        metadata_payload: object = json.loads(metadata.stdout)
+    except json.JSONDecodeError as error:
+        print(f"drift cargo: invalid cargo metadata output: {error}", file=sys.stderr)
+        return 2
 
     command = [
         "cargo",
@@ -141,6 +214,7 @@ def main() -> int:
             temporary = output.with_suffix(output.suffix + ".tmp")
             shutil.copy2(source, temporary)
             os.replace(temporary, output)
+    _depfile_write(arguments.depfile, arguments.dep_target, _metadata_inputs(metadata_payload))
     return 0
 
 

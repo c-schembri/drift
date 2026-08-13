@@ -5,7 +5,8 @@ Drift separates project policy from execution in seven stages:
 1. `drift.toml` selects a supported API version and a typed Python provider. API v1 is stable; v0 remains a migration
    compatibility surface.
 2. The manifest's optional `requires-drift` constraint is validated before `ProjectApi` records immutable dataclasses.
-   Provider evaluation must not compile, download, or mutate the source tree.
+   Provider evaluation must not compile, download, or mutate the source tree. Host tool/file discovery records its
+   selected inputs, while local SDK copying remains an explicit `drift sdk materialize` operation.
 3. `drift.lock` fixes scoped external source identities and verified content digests without executing build adapters.
 4. Locked package projects and their transitive Drift packages are loaded from the content-addressed store and composed
    under collision-proof target names.
@@ -27,12 +28,15 @@ the cached Ninja graph directly; changing provider code or adding or removing a 
 Shared cache deletion is never implicit. `drift cache status` measures each ownership category, while cleanup requires
 both an explicit category and `--yes`; every deletion target is checked as a strict child of `DRIFT_HOME`.
 
-The runtime uses only the Python standard library. Build-system adapters bootstrap pinned tools on demand. Ninja,
+The core runtime uses only the Python standard library. Build-system adapters bootstrap pinned tools on demand. Ninja,
 CMake, and vcpkg binaries and the Meson wheel have fixed content digests; Conan runs from an isolated environment containing an
 exact package set. Cross builds select a target triple plus a sysroot or explicit JSON/upstream toolchain file.
 Autotools and pkg-config intentionally inspect host tools and are therefore host integrations rather than hermetic package formats.
 `--hermetic` removes ambient compiler and package search flags and fixes reproducibility environment values. It does not
 turn host-tool adapters into a sandbox; fully isolated builds should combine it with a pinned toolchain and prefilled cache.
+Project provider commands may opt into locked Python requirements. Drift materializes those packages under
+`DRIFT_HOME/python`, then exposes the environment only while executing project tooling; offline execution requires an
+already materialized content identity.
 
 `drift audit` derives a deterministic CycloneDX SBOM and license evidence from the exact lock and content store. Locks and
 release checksum manifests support detached SSH signatures. Tagged native archives are checksumed and receive GitHub
@@ -40,7 +44,13 @@ provenance attestations; the native self-updater replaces versioned installation
 
 ## Boundaries
 
-The build graph owns source/header selection, compile and link interfaces, object/static/shared/executable targets, custom actions, external libraries, aliases, destination-preserving runtime deployments, and locked package target references. Cargo artifact messages are translated into stable build outputs rather than exposing Cargo target-directory layouts to consumers. The workflow graph separately owns operational tasks. Tests, configuration matrices, benchmarks, artifacts, releases, GitHub, and remotes are typed services referencing those declarations.
+The build graph owns source/header selection, reusable native profiles, compile and link interfaces,
+object/static/shared/executable targets, Windows resources, custom actions, external libraries, aliases,
+destination-preserving runtime deployments, and locked package target references. Cargo metadata contributes the complete
+local workspace source graph to Ninja depfiles, while artifact messages are translated into stable build outputs rather
+than exposing Cargo target-directory layouts to consumers. The workflow graph separately owns operational tasks and can
+reference tests, targets, matrices, and provider commands directly. Tests, configuration matrices, benchmarks,
+artifacts, releases, GitHub, and remotes are typed services referencing those declarations.
 
 Drift's native source package layer intentionally has no registry or version solver. A package must be pinned to an exact
 Git commit or archive digest and expose a native Drift project, a recognized upstream build description, or a trusted

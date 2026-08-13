@@ -66,7 +66,7 @@ def local_sdk_load(
         raise ConfigurationError(f"Cannot read local SDK descriptor {descriptor}: {error}") from error
     if not isinstance(payload, dict):
         raise ConfigurationError(f"Local SDK descriptor {descriptor} must contain an object")
-    unknown = sorted(set(payload) - _FIELDS - {"variants"})
+    unknown = sorted(set(payload) - _FIELDS - {"materialize", "variants"})
     if unknown:
         raise ConfigurationError(f"Local SDK descriptor has unknown fields: {', '.join(unknown)}")
     for field in _FIELDS:
@@ -87,6 +87,13 @@ def local_sdk_load(
             if not isinstance(value, list):
                 raise ConfigurationError(f"Local SDK variant field {key} must be an array")
             merged[key] = [*merged.get(key, []), *value]
+
+    materialize = payload.get("materialize")
+    if materialize is not None:
+        if not isinstance(materialize, dict) or set(materialize) - {"required", "optional"}:
+            raise ConfigurationError("Local SDK materialize must contain only required and optional arrays")
+        _strings(materialize, "required")
+        _strings(materialize, "optional")
 
     replacements = {
         "${root}": str(root),

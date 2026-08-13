@@ -18,7 +18,7 @@ from pathlib import Path
 from driftbuild.errors import ExecutionError
 from driftbuild.storage import drift_home
 
-_CATEGORIES = ("sources", "binaries", "tools", "conan", "vcpkg")
+_CATEGORIES = ("sources", "binaries", "tools", "python", "conan", "vcpkg")
 
 
 def _sha256(path: Path) -> str:
@@ -46,6 +46,7 @@ def cache_paths() -> dict[str, Path]:
         "sources": home / "store",
         "binaries": home / "binaries",
         "tools": home / "tools",
+        "python": home / "python",
         "conan": home / "conan",
         "vcpkg": home / "vcpkg",
     }

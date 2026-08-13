@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import shutil
 import stat
 import sys
 import tomllib
@@ -32,8 +33,10 @@ from driftbuild.model import (
     GitHubSpec,
     GitSource,
     LinkInterface,
+    LocalSdkSpec,
     MatrixSpec,
     MsbuildProject,
+    NativeProfile,
     PackageBuild,
     PackageLinkage,
     PackageRef,
@@ -121,6 +124,8 @@ class ProjectApi:
         self._discovery_directories: set[Path] = set()
         self._configuration_inputs: set[Path] = set()
         self._configuration_environment: set[str] = set()
+        self._local_sdks: dict[str, LocalSdkSpec] = {}
+        self._python_requirements: list[Path] = []
 
     def files(self, *paths: str | os.PathLike[str]) -> FileSet:
         """Return explicit, validated repository-relative files."""
@@ -299,6 +304,7 @@ class ProjectApi:
         descriptor: str | os.PathLike[str],
         environment: Sequence[str] = (),
         roots: Sequence[str | os.PathLike[str] | None] = (),
+        materialize_to: str | os.PathLike[str] | None = None,
     ) -> Dependency:
         """Import a manifest-described local SDK from the first available root."""
         from driftbuild.sdk import local_sdk_load
@@ -314,7 +320,100 @@ class ProjectApi:
             detail = ", ".join(str(path) for path in resolved) or "no roots configured"
             raise ConfigurationError(f"Local SDK {name} was not found: {detail}")
         selected_config = replace(self.config, values={**self.config.values, **self._option_values})
-        return local_sdk_load(name, selected, descriptor_path, self.root, selected_config)
+        dependency = local_sdk_load(name, selected, descriptor_path, self.root, selected_config)
+        if materialize_to is not None:
+            destination = self.root / _safe_relative(self.root, materialize_to, must_exist=False)
+            if any(existing.casefold() == name.casefold() for existing in self._local_sdks):
+                raise ConfigurationError(f"Duplicate materialised local SDK: {name}")
+            self._local_sdks[name] = LocalSdkSpec(name, selected, destination, descriptor_path)
+        return dependency
+
+    def find_file(
+        self,
+        name: str,
+        *,
+        roots: Sequence[str | os.PathLike[str]] = (),
+        environment: Sequence[str] = (),
+    ) -> Path:
+        """Find one required host file while recording configuration inputs."""
+        if not name or Path(name).name != name:
+            raise ConfigurationError(f"Discovered file name must be one path component: {name!r}")
+        self._configuration_environment.update(environment)
+        candidates: list[Path] = []
+        for variable in environment:
+            if value := os.environ.get(variable):
+                environment_path = Path(value).expanduser()
+                candidates.append(environment_path / name if environment_path.is_dir() else environment_path)
+        for root in roots:
+            candidates.append(Path(root).expanduser() / name)
+        found = next((path.resolve() for path in candidates if path.is_file()), None)
+        if found is None:
+            detail = ", ".join(str(path) for path in candidates) or "no search roots configured"
+            raise ConfigurationError(f"Required file {name} was not found: {detail}")
+        self._configuration_inputs.add(found)
+        return found
+
+    def find_program(
+        self,
+        name: str,
+        *,
+        roots: Sequence[str | os.PathLike[str]] = (),
+        environment: Sequence[str] = (),
+    ) -> Path:
+        """Find one required executable in declared roots and then PATH."""
+        self._configuration_environment.add("PATH")
+        self._configuration_environment.update(environment)
+        candidates: list[Path] = []
+        for variable in environment:
+            if value := os.environ.get(variable):
+                environment_path = Path(value).expanduser()
+                candidates.append(environment_path / name if environment_path.is_dir() else environment_path)
+        candidates.extend(Path(root).expanduser() / name for root in roots)
+        path_value = shutil.which(name)
+        if path_value is not None:
+            candidates.append(Path(path_value))
+        found = next((path.resolve() for path in candidates if path.is_file()), None)
+        if found is None:
+            detail = ", ".join(str(path) for path in candidates) or "PATH"
+            raise ConfigurationError(f"Required program {name} was not found: {detail}")
+        self._configuration_inputs.add(found)
+        return found
+
+    def native_profile(
+        self,
+        name: str,
+        *,
+        include_dirs: Sequence[str | os.PathLike[str]] = (),
+        defines: Sequence[str] = (),
+        compile_arguments: Sequence[str] = (),
+        link_arguments: Sequence[str] = (),
+        dependencies: Sequence[Dependency | TargetDependency] = (),
+        objects: Sequence[TargetRef] = (),
+        runtime_files: FileSet | RuntimeInput | Sequence[RuntimeInput] | None = None,
+    ) -> NativeProfile:
+        """Declare reusable native target settings without registering a target."""
+        if not name or any(character.isspace() for character in name):
+            raise ConfigurationError(f"Invalid native profile name: {name!r}")
+        return NativeProfile(
+            name,
+            tuple(Path(value) for value in include_dirs),
+            tuple(defines),
+            tuple(compile_arguments),
+            tuple(link_arguments),
+            tuple(dependencies),
+            tuple(objects),
+            _runtime_inputs(runtime_files),
+        )
+
+    def python_requirements(self, *paths: str | os.PathLike[str]) -> None:
+        """Declare locked Python requirements used by provider commands."""
+        for value in paths:
+            path = self.root / _safe_relative(self.root, value, must_exist=True)
+            if not path.is_file():
+                raise ConfigurationError(f"Python requirements path is not a file: {path}")
+            if path not in self._python_requirements:
+                self._python_requirements.append(path)
+                self._configuration_inputs.add(path)
 
     def _cargo_action(
         self,
@@ -346,11 +445,13 @@ class ProjectApi:
 
         cargo_inputs = inputs
         if cargo_inputs is None:
-            cargo_inputs = self.tree(
-                manifest_path.parent,
-                include=("**/*.rs", "**/Cargo.toml", "Cargo.lock", "**/build.rs", ".cargo/**/*.toml"),
-                exclude=("target/**/*", ".drift/**/*"),
-            )
+            initial_inputs = [manifest_path]
+            for parent in (manifest_path.parent, *manifest_path.parents):
+                lock = parent / "Cargo.lock"
+                if (self.root / lock).is_file():
+                    initial_inputs.append(lock)
+                    break
+            cargo_inputs = tuple(initial_inputs)
 
         cargo_target_directory = (
             "{build}"
@@ -392,6 +493,10 @@ class ProjectApi:
             manifest_path.as_posix(),
             "--target-dir",
             cargo_target_directory,
+            "--depfile",
+            f"{{build}}/cargo-deps/{name}.d",
+            "--dep-target",
+            "{out}",
         ]
         if self.config.build_type == "release":
             command.append("--release")
@@ -424,6 +529,8 @@ class ProjectApi:
             description=f"CARGO {name}",
             restat=True,
             stamp_outputs=stamp_outputs,
+            depfile=Path("cargo-deps") / f"{name}.d",
+            deps="gcc",
         )
         return action
 
@@ -728,24 +835,32 @@ class ProjectApi:
         run_environment: Mapping[str, str] | None = None,
         run_working_directory: str | os.PathLike[str] | None = None,
         runtime_clean: bool = False,
+        profiles: Sequence[NativeProfile] = (),
     ) -> TargetRef:
         if not name or any(character.isspace() for character in name):
             raise ConfigurationError(f"Invalid target name: {name!r}")
         if name in self._targets:
             raise ConfigurationError(f"Duplicate target name: {name}")
+        profile_include_dirs = tuple(value for profile in profiles for value in profile.include_dirs)
+        profile_defines = tuple(value for profile in profiles for value in profile.defines)
+        profile_compile_arguments = tuple(value for profile in profiles for value in profile.compile_arguments)
+        profile_link_arguments = tuple(value for profile in profiles for value in profile.link_arguments)
+        profile_dependencies = tuple(value for profile in profiles for value in profile.dependencies)
+        profile_objects = tuple(value for profile in profiles for value in profile.objects)
+        profile_runtime_files = tuple(value for profile in profiles for value in profile.runtime_files)
         spec = TargetSpec(
             name=name,
             kind=kind,
             sources=_inputs(sources),
             public_headers=_inputs(public_headers),
             private_headers=_inputs(private_headers),
-            include_dirs=tuple(Path(value) for value in include_dirs),
-            defines=tuple(defines),
-            compile_arguments=tuple(compile_arguments),
-            link_arguments=tuple(link_arguments),
-            dependencies=tuple(dependencies),
-            objects=tuple(objects),
-            runtime_files=_runtime_inputs(runtime_files),
+            include_dirs=(*profile_include_dirs, *(Path(value) for value in include_dirs)),
+            defines=(*profile_defines, *defines),
+            compile_arguments=(*profile_compile_arguments, *compile_arguments),
+            link_arguments=(*profile_link_arguments, *link_arguments),
+            dependencies=(*profile_dependencies, *dependencies),
+            objects=(*profile_objects, *objects),
+            runtime_files=(*profile_runtime_files, *_runtime_inputs(runtime_files)),
             outputs=tuple(Path(value) for value in outputs),
             action=action,
             precompiled_header=(
@@ -965,6 +1080,8 @@ class ProjectApi:
             options=tuple(self._options),
             configuration_inputs=tuple(sorted(self._configuration_inputs, key=lambda path: path.as_posix())),
             configuration_environment=tuple(sorted(self._configuration_environment)),
+            local_sdks=tuple(self._local_sdks.values()),
+            python_requirements=tuple(self._python_requirements),
         )
 
 

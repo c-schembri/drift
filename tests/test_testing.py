@@ -103,3 +103,24 @@ def test_suite_runs_its_dependency_graph(tmp_path: Path) -> None:
 
     assert events == ["first", "second"]
     assert results[0].name == "full"
+
+
+def test_suite_task_can_reference_a_declared_test(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[tuple[str, ...]] = []
+    suite = SuiteSpec("full", (TaskSpec("unit", test="unit"),))
+    project = ProjectSpec(
+        "sample",
+        tests=(DriftTestSpec("unit", ("unit-command",)),),
+        suites=(suite,),
+    )
+
+    def run_fake(command, **_kwargs):  # type: ignore[no-untyped-def]
+        observed.append(tuple(command))
+        return ProcessResult(tuple(command), 0, "", "")
+
+    monkeypatch.setattr("driftbuild.testing.run", run_fake)
+
+    results = run_tests(project, tmp_path, tmp_path / ".drift", BuildConfig("win32"), names=("full",))
+
+    assert observed == [("unit-command",)]
+    assert results[0].name == "full"

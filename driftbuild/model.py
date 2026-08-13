@@ -192,6 +192,30 @@ class Dependency:
 
 
 @dataclass(frozen=True)
+class LocalSdkSpec:
+    """Explicit materialisation recipe for one manifest-described local SDK."""
+
+    name: str
+    source: Path
+    destination: Path
+    descriptor: Path
+
+
+@dataclass(frozen=True)
+class NativeProfile:
+    """Reusable compile and link policy shared by native targets."""
+
+    name: str
+    include_dirs: tuple[Path, ...] = ()
+    defines: tuple[str, ...] = ()
+    compile_arguments: tuple[str, ...] = ()
+    link_arguments: tuple[str, ...] = ()
+    dependencies: tuple[Dependency | TargetDependency, ...] = ()
+    objects: tuple[TargetRef, ...] = ()
+    runtime_files: tuple[RuntimeInput, ...] = ()
+
+
+@dataclass(frozen=True)
 class TargetDependency:
     """Target dependency with explicit public or private visibility."""
 
@@ -315,6 +339,11 @@ class TaskSpec:
     environment: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float | None = None
     retries: int = 0
+    test: str | None = None
+    matrix: str | None = None
+    targets: tuple[str, ...] = ()
+    configuration: Mapping[str, str] = field(default_factory=dict)
+    provider_command: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -439,6 +468,8 @@ class ProjectSpec:
     suites: tuple[SuiteSpec, ...] = ()
     configuration_inputs: tuple[Path, ...] = ()
     configuration_environment: tuple[str, ...] = ()
+    local_sdks: tuple[LocalSdkSpec, ...] = ()
+    python_requirements: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -29,11 +29,12 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --group dist
       - name: Build native application directory
-        run: uv run --group dist pyinstaller --noconfirm --clean --onedir --name drift --collect-submodules driftbuild --collect-submodules mesonbuild --collect-submodules pip drift.py
+        run: uv run --group dist python scripts/build_native.py
       - name: Smoke test executable
         shell: bash
         run: |
           "${{ matrix.executable }}" --version
+          "${{ matrix.executable }}" -m unittest -h >/dev/null
           "${{ matrix.executable }}" build examples/native
           "${{ matrix.executable }}" run examples/native
           DRIFT_HOME="$RUNNER_TEMP/drift-native-home" "${{ matrix.executable }}" build examples/inih

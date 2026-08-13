@@ -74,17 +74,22 @@ def test_cargo_declares_workspace_build_with_discovered_inputs(tmp_path: Path) -
     spec = api.project("sample", defaults=(target,)).targets[0]
 
     assert spec.action is not None
-    assert spec.action.command[-6:] == (
+    assert spec.action.command[-10:] == (
         "--manifest",
         "Server/Cargo.toml",
         "--target-dir",
         "{build}",
+        "--depfile",
+        "{build}/cargo-deps/server.d",
+        "--dep-target",
+        "{out}",
         "--release",
         "--workspace",
     )
     assert spec.action.outputs == (Path("cargo-stamps/server.stamp"),)
     assert spec.action.stamp_outputs is True
-    assert Path("Server/src/main.rs") in spec.action.inputs
+    assert spec.action.inputs == (Path("Server/Cargo.toml"), Path("Server/Cargo.lock"))
+    assert spec.action.depfile == Path("cargo-deps/server.d")
 
 
 def test_cargo_rejects_workspace_and_package_selection(tmp_path: Path) -> None:
@@ -270,3 +275,82 @@ def test_local_sdk_loads_selected_interface(tmp_path: Path, monkeypatch: pytest.
     project = api.project("sample")
     assert project.configuration_inputs == (descriptor,)
     assert project.configuration_environment == ("SAMPLE_SDK_ROOT",)
+
+
+def test_local_sdk_can_declare_an_explicit_materialization_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk = tmp_path / "source-sdk"
+    (sdk / "include").mkdir(parents=True)
+    descriptor = tmp_path / "sample.sdk.json"
+    descriptor.write_text('{"include_dirs":["include"],"materialize":{"required":["include"]}}', encoding="utf-8")
+    monkeypatch.setenv("SAMPLE_ROOT", str(sdk))
+    api = api_for(tmp_path)
+
+    api.local_sdk(
+        "sample",
+        descriptor=descriptor.name,
+        environment=("SAMPLE_ROOT",),
+        materialize_to="vendor/sample",
+    )
+
+    spec = api.project("sample").local_sdks[0]
+    assert spec.source == sdk
+    assert spec.destination == tmp_path / "vendor/sample"
+    assert spec.descriptor == descriptor
+
+
+def test_program_and_file_discovery_record_selected_inputs(tmp_path: Path) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    program = tools / "compiler.exe"
+    companion = tools / "runtime.dll"
+    program.write_bytes(b"program")
+    companion.write_bytes(b"runtime")
+    api = api_for(tmp_path)
+
+    assert api.find_program("compiler.exe", roots=(tools,)) == program
+    assert api.find_file("runtime.dll", roots=(tools,)) == companion
+
+    project = api.project("sample")
+    assert program in project.configuration_inputs
+    assert companion in project.configuration_inputs
+    assert "PATH" in project.configuration_environment
+
+
+def test_native_profiles_are_merged_before_target_specific_settings(tmp_path: Path) -> None:
+    source = tmp_path / "main.cpp"
+    source.write_text("int main() { return 0; }", encoding="utf-8")
+    api = api_for(tmp_path)
+    dependency = api.dependency("platform", defines=("PLATFORM",))
+    profile = api.native_profile(
+        "common",
+        include_dirs=("include",),
+        defines=("COMMON",),
+        compile_arguments=("-Wall",),
+        link_arguments=("-pthread",),
+        dependencies=(dependency,),
+    )
+
+    target = api.executable(
+        "sample", sources=api.files("main.cpp"), profiles=(profile,), defines=("TARGET",)
+    )
+    spec = api.project("sample", defaults=(target,)).targets[0]
+
+    assert spec.include_dirs == (Path("include"),)
+    assert spec.defines == ("COMMON", "TARGET")
+    assert spec.compile_arguments == ("-Wall",)
+    assert spec.link_arguments == ("-pthread",)
+    assert spec.dependencies == (dependency,)
+
+
+def test_python_requirements_are_registered_as_configuration_inputs(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("sample==1.0\n", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    api.python_requirements("requirements.txt")
+    project = api.project("sample")
+
+    assert project.python_requirements == (requirements,)
+    assert requirements in project.configuration_inputs

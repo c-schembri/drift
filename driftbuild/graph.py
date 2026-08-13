@@ -146,10 +146,20 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
     if len(task_names) != len(project.tasks):
         raise ConfigurationError("Task names must be unique")
     for task in project.tasks:
-        if task.command is None and task.handler is None and not task.dependencies:
-            raise ConfigurationError(f"Task {task.name} requires a command, handler, or dependency")
-        if task.command is not None and task.handler is not None:
-            raise ConfigurationError(f"Task {task.name} cannot declare both command and handler")
+        modes = sum(
+            (
+                task.command is not None,
+                task.handler is not None,
+                task.test is not None,
+                task.matrix is not None,
+                bool(task.targets),
+                bool(task.provider_command),
+            )
+        )
+        if modes == 0 and not task.dependencies:
+            raise ConfigurationError(f"Task {task.name} requires work or a dependency")
+        if modes > 1:
+            raise ConfigurationError(f"Task {task.name} has multiple execution modes")
         unknown = sorted(set(task.dependencies) - task_names)
         if unknown:
             raise ConfigurationError(f"Task {task.name} references unknown tasks: {', '.join(unknown)}")
@@ -198,9 +208,19 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
         if len(names) != len(suite.tasks):
             raise ConfigurationError(f"Suite {suite.name} task names must be unique")
         for task in suite.tasks:
-            if task.command is None and task.handler is None and not task.dependencies:
+            modes = sum(
+                (
+                    task.command is not None,
+                    task.handler is not None,
+                    task.test is not None,
+                    task.matrix is not None,
+                    bool(task.targets),
+                    bool(task.provider_command),
+                )
+            )
+            if modes == 0 and not task.dependencies:
                 raise ConfigurationError(f"Suite {suite.name} task {task.name} has no work")
-            if task.command is not None and task.handler is not None:
+            if modes > 1:
                 raise ConfigurationError(f"Suite {suite.name} task {task.name} has multiple execution modes")
             unknown = sorted(set(task.dependencies) - names)
             if unknown:
@@ -223,6 +243,20 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
                     raise ConfigurationError(
                         f"Matrix {matrix.name} has invalid {name} values: {', '.join(invalid)}"
                     )
+    matrix_names = {matrix.name for matrix in project.matrices}
+    for owner, tasks in (("project", project.tasks), *((f"suite {suite.name}", suite.tasks) for suite in project.suites)):
+        for task in tasks:
+            if task.test is not None and task.test not in test_names:
+                raise ConfigurationError(f"{owner} task {task.name} references unknown test: {task.test}")
+            if task.matrix is not None and task.matrix not in matrix_names:
+                raise ConfigurationError(f"{owner} task {task.name} references unknown matrix: {task.matrix}")
+            unknown_targets = sorted(set(task.targets) - set(targets))
+            if unknown_targets:
+                raise ConfigurationError(
+                    f"{owner} task {task.name} references unknown targets: {', '.join(unknown_targets)}"
+                )
+            if task.configuration and task.test is None and not task.targets:
+                raise ConfigurationError(f"{owner} task {task.name} configuration requires a test or targets")
     for benchmark in project.benchmarks:
         unknown = sorted(reference.name for reference in benchmark.build_targets if reference.name not in targets)
         if unknown:

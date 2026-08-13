@@ -70,6 +70,30 @@ def test_msvc_shared_library_emits_runtime_and_import_library(tmp_path: Path) ->
     assert "sample-link.rsp" in ninja
 
 
+def test_msvc_compiles_windows_resource_sources_into_link_inputs(tmp_path: Path) -> None:
+    (tmp_path / "main.cpp").write_text("int main() { return 0; }", encoding="utf-8")
+    (tmp_path / "app.rc").write_text("1 ICON \"app.ico\"\n", encoding="utf-8")
+    (tmp_path / "app.ico").write_bytes(b"icon")
+    api = ProjectApi(tmp_path, BuildConfig("win32", compiler="msvc"))
+    application = api.executable(
+        "app",
+        sources=api.files("main.cpp", "app.rc", "app.ico"),
+        private_headers=api.files("app.ico"),
+        include_dirs=(tmp_path,),
+        defines=("RESOURCE_BUILD",),
+    )
+    project = api.project("sample", defaults=(application,))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    generated = generate(project, tmp_path, tmp_path / ".drift", api.config, toolchain)
+    ninja = generated.ninja_file.read_text(encoding="utf-8")
+
+    assert "description = RC app" in ninja
+    assert "/DRESOURCE_BUILD" in ninja
+    assert "app.res" in ninja
+    assert "app-link.rsp" in ninja
+
+
 def test_msvc_static_library_places_inputs_in_response_file(tmp_path: Path) -> None:
     (tmp_path / "first.c").write_text("int first(void) { return 1; }", encoding="utf-8")
     (tmp_path / "second.c").write_text("int second(void) { return 2; }", encoding="utf-8")

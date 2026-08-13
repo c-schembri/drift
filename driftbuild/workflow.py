@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import inspect
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -15,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from driftbuild.errors import ExecutionError
-from driftbuild.model import CommandContext, ProjectSpec, TaskSpec
+from driftbuild.model import BuildConfig, CommandContext, ProjectSpec, TaskSpec
 from driftbuild.process import OwnedProcess, command_render
 
 
@@ -60,7 +62,15 @@ def _invoke(handler: Callable[..., Any], context: CommandContext) -> None:
         asyncio.run(_await(value))
 
 
-def _execute(task: TaskSpec, context: CommandContext, registry: _ProcessRegistry) -> TaskResult:
+def _execute(
+    task: TaskSpec,
+    context: CommandContext,
+    registry: _ProcessRegistry,
+    project: ProjectSpec,
+    config: BuildConfig,
+    jobs: int | None,
+    offline: bool,
+) -> TaskResult:
     started = time.perf_counter()
     last_error: Exception | None = None
     for attempt in range(1, task.retries + 2):
@@ -88,6 +98,64 @@ def _execute(task: TaskSpec, context: CommandContext, registry: _ProcessRegistry
                         registry.remove(process)
             elif task.handler is not None:
                 _invoke(task.handler, context)
+            elif task.test is not None or task.targets:
+                from driftbuild.graph import project_validate
+                from driftbuild.matrix import configuration_apply
+                from driftbuild.packages import packages_compose
+                from driftbuild.project import project_load
+
+                selected_config = configuration_apply(config, dict(task.configuration))
+                selected_project = project
+                if selected_config != config:
+                    selected_project = packages_compose(
+                        project_load(context.project_root, selected_config),
+                        context.project_root,
+                        selected_config,
+                        offline=offline,
+                    )
+                    project_validate(selected_project)
+                if task.test is not None:
+                    from driftbuild.testing import tests_run
+
+                    tests_run(
+                        selected_project,
+                        context.project_root,
+                        context.state_root,
+                        selected_config,
+                        (task.test,),
+                        jobs=jobs,
+                    )
+                else:
+                    from driftbuild.build import build
+
+                    build(
+                        selected_project,
+                        context.project_root,
+                        context.state_root,
+                        selected_config,
+                        task.targets,
+                        jobs=jobs,
+                    )
+            elif task.matrix is not None:
+                from driftbuild.matrix import matrix_run
+
+                selected = next((item for item in project.matrices if item.name == task.matrix), None)
+                if selected is None:
+                    raise ExecutionError(f"Unknown task matrix: {task.matrix}")
+                matrix_run(selected, context.project_root, context.state_root, config, jobs=jobs, offline=offline)
+            elif task.provider_command:
+                from driftbuild.cli import _provider_command
+
+                result = _provider_command(
+                    argparse.Namespace(arguments=list(task.provider_command), verbose=False, provider_help=False),
+                    project,
+                    context.project_root,
+                    config,
+                )
+                if result != 0:
+                    raise ExecutionError(
+                        f"Provider command failed ({result}): {' '.join(task.provider_command)}"
+                    )
             return TaskResult(task.name, attempt, time.perf_counter() - started)
         except Exception as error:
             last_error = error
@@ -102,7 +170,14 @@ def _execute(task: TaskSpec, context: CommandContext, registry: _ProcessRegistry
 
 
 def tasks_run(
-    project: ProjectSpec, names: Sequence[str], root: Path, state_root: Path, jobs: int | None = None
+    project: ProjectSpec,
+    names: Sequence[str],
+    root: Path,
+    state_root: Path,
+    jobs: int | None = None,
+    *,
+    config: BuildConfig | None = None,
+    offline: bool = False,
 ) -> tuple[TaskResult, ...]:
     """Run requested tasks and dependencies, respecting named resource locks."""
     tasks = {task.name: task for task in project.tasks}
@@ -121,6 +196,7 @@ def tasks_run(
     for name in requested:
         include(name)
     context = CommandContext(root, state_root, dict(os.environ))
+    selected_config = config or BuildConfig(sys.platform)
     pending = set(required)
     complete: set[str] = set()
     failed: set[str] = set()
@@ -148,7 +224,11 @@ def tasks_run(
                     continue
                 pending.remove(name)
                 held_resources.update(task.resources)
-                running[executor.submit(_execute, task, context, registry)] = task
+                running[
+                    executor.submit(
+                        _execute, task, context, registry, project, selected_config, jobs, offline
+                    )
+                ] = task
                 launched = True
                 if len(running) >= worker_count:
                     break

@@ -507,6 +507,35 @@ def generate(
                 objects.append(pch_object)
         for index, source in enumerate(target_sources):
             source_path = _source_path(root, source, outputs)
+            if source_path.suffix.casefold() == ".rc":
+                if toolchain.family != "msvc":
+                    raise ConfigurationError(f"Windows resource source requires an MSVC-compatible toolchain: {source_path}")
+                resource_path = build_root / "obj" / target.name / f"{index}-{source_path.stem}.res"
+                resource_path.parent.mkdir(parents=True, exist_ok=True)
+                resource_flags = [
+                    value
+                    for value in _compile_flags(target, targets, root, config, toolchain)
+                    if value.startswith(("/D", "/I"))
+                ]
+                command = _shell(
+                    ["rc", "/nologo", f"/fo{resource_path}", *resource_flags, str(source_path)]
+                )
+                resource_inputs = [
+                    _source_path(root, value, outputs) for value in (*target.public_headers, *target.private_headers)
+                ]
+                implicit_text = (
+                    f" | {' '.join(_ninja(path) for path in resource_inputs)}" if resource_inputs else ""
+                )
+                lines += [
+                    f"build {_ninja(resource_path)}: action {_ninja(source_path)}{implicit_text}",
+                    f"  command = {command}",
+                    f"  description = RC {target.name}",
+                    "  restat = 0",
+                    "",
+                ]
+                objects.append(resource_path)
+                output_phases[resource_path] = "compile"
+                continue
             if source_path.suffix.lower() not in (".c", ".cc", ".cpp", ".cxx", ".m", ".mm"):
                 continue
             object_path = build_root / "obj" / target.name / f"{index}-{source_path.stem}{toolchain.object_suffix}"

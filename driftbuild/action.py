@@ -23,7 +23,7 @@ def _expand(value: str, payload: dict[str, Any]) -> str:
         return str(payload["outputs"][int(value[5:-1])])
     if value.startswith("{in:") and value.endswith("}"):
         return str(payload["inputs"][int(value[4:-1])])
-    return value
+    return value.replace("{root}", str(payload["root"])).replace("{build}", str(payload["build_root"]))
 
 
 def main() -> int:

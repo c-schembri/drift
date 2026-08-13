@@ -54,6 +54,7 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "output",
         "perf",
         "run",
+        "sdk",
         "self-update",
         "task",
         "targets",
@@ -219,14 +220,14 @@ def _base_parser() -> argparse.ArgumentParser:
     cache_status_parser.set_defaults(handler=_cache)
     cache_clean_parser = cache_commands.add_parser("clean", help="remove selected shared cache categories")
     cache_clean_parser.add_argument(
-        "categories", nargs="+", choices=("sources", "binaries", "tools", "conan", "vcpkg", "all")
+        "categories", nargs="+", choices=("sources", "binaries", "tools", "python", "conan", "vcpkg", "all")
     )
     cache_clean_parser.add_argument("--yes", action="store_true", help="confirm shared cache deletion")
     cache_clean_parser.set_defaults(handler=_cache)
     cache_export_parser = cache_commands.add_parser("export", help="export shared caches to an archive")
     cache_export_parser.add_argument("archive", type=Path)
     cache_export_parser.add_argument(
-        "categories", nargs="*", default=["all"], choices=("sources", "binaries", "tools", "conan", "vcpkg", "all")
+        "categories", nargs="*", default=["all"], choices=("sources", "binaries", "tools", "python", "conan", "vcpkg", "all")
     )
     cache_export_parser.set_defaults(handler=_cache)
     cache_import_parser = cache_commands.add_parser("import", help="import a shared cache archive")
@@ -240,7 +241,7 @@ def _base_parser() -> argparse.ArgumentParser:
     cache_push_parser = cache_commands.add_parser("push", help="export and upload shared caches")
     cache_push_parser.add_argument("url")
     cache_push_parser.add_argument(
-        "categories", nargs="*", default=["all"], choices=("sources", "binaries", "tools", "conan", "vcpkg", "all")
+        "categories", nargs="*", default=["all"], choices=("sources", "binaries", "tools", "python", "conan", "vcpkg", "all")
     )
     cache_push_parser.set_defaults(handler=_cache)
     clean_parser = commands.add_parser("clean", help="remove outputs for default or named targets")
@@ -267,6 +268,13 @@ def _base_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("targets", nargs="*")
     install_parser.add_argument("--prefix", type=Path, required=True)
     install_parser.set_defaults(handler=_install)
+    sdk_parser = commands.add_parser("sdk", help="manage manifest-described local SDKs")
+    sdk_commands = sdk_parser.add_subparsers(dest="sdk_operation", required=True)
+    sdk_materialize_parser = sdk_commands.add_parser(
+        "materialize", help="replace managed SDK destinations with their minimal declared layouts"
+    )
+    sdk_materialize_parser.add_argument("names", nargs="*")
+    sdk_materialize_parser.set_defaults(handler=_sdk)
     run_parser = commands.add_parser("run", help="build and run an executable target")
     run_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     run_parser.set_defaults(handler=_run)
@@ -406,6 +414,14 @@ def _lock(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _conf
     if arguments.sign is not None:
         signature_create(lock_path, arguments.sign.resolve())
     print(f"Locked {len(result.packages)} package(s) in {root / 'drift.lock'}")
+    return 0
+
+
+def _sdk(arguments: argparse.Namespace, project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
+    from driftbuild.sdk_materialize import sdks_materialize
+
+    for name, count in sdks_materialize(project.local_sdks, tuple(arguments.names)):
+        print(f"Materialized {name}: {count} files")
     return 0
 
 
@@ -648,10 +664,12 @@ def _targets(arguments: argparse.Namespace, project: ProjectSpec, _root: Path, _
     return 0
 
 
-def _task(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+def _task(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
     from driftbuild.workflow import tasks_run
 
-    for result in tasks_run(project, arguments.names, root, root / ".drift", arguments.jobs):
+    for result in tasks_run(
+        project, arguments.names, root, root / ".drift", arguments.jobs, config=config, offline=arguments.offline
+    ):
         print(f"{result.name}: {result.duration_seconds:.3f}s ({result.attempts} attempt(s))")
     return 0
 
@@ -818,6 +836,8 @@ def _option_add(parser: argparse.ArgumentParser, option: OptionSpec) -> None:
 
 
 def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.python_environment import python_environment_activate
+
     raw = list(arguments.arguments)
     if getattr(arguments, "provider_help", False):
         raw.append("--help")
@@ -835,6 +855,7 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
         available = ", ".join(" ".join(item.path) for item in project.commands) or "none"
         raise ExecutionError(f"Unknown provider command. Available: {available}")
     remaining = raw[len(command.path) :]
+    python_environment_activate(project, root / ".drift", offline=getattr(arguments, "offline", False))
     outputs: dict[str, tuple[Path, ...]] = {}
     if command.build_targets:
         from driftbuild.build import build
@@ -905,7 +926,7 @@ def _provider_help(project: ProjectSpec, prefix: tuple[str, ...]) -> None:
 def _completion(arguments: argparse.Namespace, project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
     builtins = (
         "artifact audit benchmark bootstrap build cache clean command completion configure doctor fetch generate "
-        "graph inspect install lock matrix outdated output perf release remote run self-update task targets test update"
+        "graph inspect install lock matrix outdated output perf release remote run sdk self-update task targets test update"
     ).split()
     paths = [item.path for item in project.command_groups] + [item.path for item in project.commands]
     provider = [part for path in paths for part in path]

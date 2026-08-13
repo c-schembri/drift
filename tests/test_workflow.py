@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from driftbuild.errors import ExecutionError
-from driftbuild.model import ProjectSpec, TaskSpec
+from driftbuild.model import BuildConfig, CommandSpec, MatrixSpec, ProjectSpec, TargetSpec, TaskSpec
+from driftbuild.model import TestSpec as DriftTestSpec
 from driftbuild.workflow import tasks_run
 
 
@@ -69,3 +70,74 @@ def test_command_tasks_report_nonzero_exit(tmp_path: Path) -> None:
 
     with pytest.raises(ExecutionError, match=r"failed: Command failed \(7\)"):
         tasks_run(project, (), tmp_path, tmp_path / ".drift")
+
+
+def test_direct_test_and_target_tasks_do_not_launch_nested_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[str, object]] = []
+    project = ProjectSpec(
+        "workflow",
+        targets=(TargetSpec("app", "executable"),),
+        tests=(DriftTestSpec("smoke", ("smoke-command",)),),
+        tasks=(
+            TaskSpec("build", targets=("app",)),
+            TaskSpec("test", test="smoke", dependencies=("build",)),
+        ),
+    )
+    monkeypatch.setattr(
+        "driftbuild.build.build",
+        lambda _project, _root, _state, config, targets, **_kwargs: events.append(("build", (config, targets))),
+    )
+    monkeypatch.setattr(
+        "driftbuild.testing.tests_run",
+        lambda _project, _root, _state, config, names, **_kwargs: events.append(("test", (config, names))),
+    )
+
+    tasks_run(
+        project,
+        ("test",),
+        tmp_path,
+        tmp_path / ".drift",
+        config=BuildConfig("win32"),
+    )
+
+    assert [event[0] for event in events] == ["build", "test"]
+    assert events[0][1][1] == ("app",)  # type: ignore[index]
+    assert events[1][1][1] == ("smoke",)  # type: ignore[index]
+
+
+def test_direct_matrix_task_uses_declared_matrix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    selected: list[str] = []
+    matrix = MatrixSpec("client", (("build-type", ("debug", "release")),), targets=("app",))
+    project = ProjectSpec(
+        "workflow",
+        targets=(TargetSpec("app", "executable"),),
+        tasks=(TaskSpec("matrix", matrix="client"),),
+        matrices=(matrix,),
+    )
+    monkeypatch.setattr(
+        "driftbuild.matrix.matrix_run",
+        lambda value, *_args, **_kwargs: selected.append(value.name),
+    )
+
+    tasks_run(project, (), tmp_path, tmp_path / ".drift", config=BuildConfig("win32"))
+
+    assert selected == ["client"]
+
+
+def test_provider_command_task_invokes_the_declared_handler_in_process(tmp_path: Path) -> None:
+    received: list[tuple[str, ...]] = []
+
+    def handler(_context, arguments):  # type: ignore[no-untyped-def]
+        received.append(arguments)
+
+    project = ProjectSpec(
+        "workflow",
+        commands=(CommandSpec(("quality",), "Run quality", handler, passthrough=True),),
+        tasks=(TaskSpec("quality", provider_command=("quality", "--quick")),),
+    )
+
+    tasks_run(project, (), tmp_path, tmp_path / ".drift", config=BuildConfig("win32"))
+
+    assert received == [("--quick",)]

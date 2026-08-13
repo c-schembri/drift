@@ -345,7 +345,9 @@ def _cached_build(arguments: list[str], started: float) -> int | None:
     state = _state_load(build_root / "configured.json")
     if state is None:
         return None
-    selected = _ninja_build_arguments(target_arguments, any(value in ("-v", "--verbose") for value in arguments[:operation]))
+    selected = _ninja_build_arguments(
+        target_arguments, any(value in ("-v", "--verbose") for value in arguments[:operation])
+    )
     if selected is None:
         return None
     ninja_arguments, dry_run = selected
@@ -382,7 +384,9 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     if getattr(sys, "frozen", False) and Path(sys.argv[0]).stem.casefold() == "conan":
         arguments = ["__drift_conan__", *arguments]
-    if arguments and arguments[0].startswith("__drift_"):
+    python_reentry = arguments[:1] in (["-c"], ["-m"])
+    python_reentry = python_reentry or bool(arguments and arguments[0].casefold().endswith((".py", ".pyw")))
+    if arguments and (arguments[0].startswith("__drift_") or getattr(sys, "frozen", False) and python_reentry):
         from driftbuild.runtime import internal_dispatch
 
         internal_result = internal_dispatch(arguments)

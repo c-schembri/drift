@@ -15,8 +15,9 @@ from driftbuild.cli import (
     _project_directory_normalize,
     _provider_command,
     _run,
+    _sdk,
 )
-from driftbuild.model import BuildConfig, CommandGroupSpec, CommandSpec, ProjectSpec, TargetRef
+from driftbuild.model import BuildConfig, CommandGroupSpec, CommandSpec, LocalSdkSpec, ProjectSpec, TargetRef
 
 
 def test_project_directory_after_command_becomes_root(tmp_path: Path) -> None:
@@ -28,6 +29,24 @@ def test_project_directory_after_command_becomes_root(tmp_path: Path) -> None:
 
     assert normalized[:2] == ["--root", str(project.resolve())]
     assert normalized[2:] == ["--compiler", "msvc", "build", "app"]
+
+
+def test_sdk_materialize_command_selects_named_sdk(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "header.h").write_text("header", encoding="utf-8")
+    descriptor = tmp_path / "sdk.json"
+    descriptor.write_text('{"materialize":{"required":["header.h"]}}', encoding="utf-8")
+    sdk = LocalSdkSpec("sample", source, tmp_path / "destination", descriptor)
+
+    assert (
+        _sdk(
+            SimpleNamespace(names=["sample"]), ProjectSpec("sample", local_sdks=(sdk,)), tmp_path, BuildConfig("win32")
+        )
+        == 0
+    )
+    assert (tmp_path / "destination/header.h").read_text(encoding="utf-8") == "header"
+    assert capsys.readouterr().out == "Materialized sample: 1 files\n"
 
 
 def test_target_directory_without_manifest_remains_a_target(tmp_path: Path) -> None:
@@ -135,9 +154,7 @@ def test_provider_command_can_import_from_project_root(tmp_path: Path) -> None:
     assert sys.path[0] != str(tmp_path)
 
 
-def test_provider_command_builds_targets_and_exposes_outputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_provider_command_builds_targets_and_exposes_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     output = tmp_path / "sample.exe"
     received = None
 
@@ -186,18 +203,14 @@ def test_root_provider_help_is_forwarded_to_the_declared_tree() -> None:
     assert arguments.arguments == []
 
 
-def test_completion_includes_provider_command_tree_words(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_completion_includes_provider_command_tree_words(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     project = ProjectSpec(
         "sample",
         commands=(CommandSpec(("release", "publish"), "Publish a release", lambda *_args: 0),),
         command_groups=(CommandGroupSpec(("release",), "Release workflows"),),
     )
 
-    assert _completion(
-        argparse.Namespace(shell="bash"), project, tmp_path, BuildConfig("test")
-    ) == 0
+    assert _completion(argparse.Namespace(shell="bash"), project, tmp_path, BuildConfig("test")) == 0
     output = capsys.readouterr().out
     assert "complete -F _drift_complete drift" in output
     assert "publish" in output
@@ -211,9 +224,12 @@ def test_output_prints_configured_target_artifacts(
     configured = SimpleNamespace(generated=SimpleNamespace(outputs={"servers": artifacts}))
     monkeypatch.setattr("driftbuild.build.configure", lambda *_args: configured)
 
-    assert _output(
-        argparse.Namespace(target_name="servers", json=True), ProjectSpec("sample"), tmp_path, BuildConfig("test")
-    ) == 0
+    assert (
+        _output(
+            argparse.Namespace(target_name="servers", json=True), ProjectSpec("sample"), tmp_path, BuildConfig("test")
+        )
+        == 0
+    )
 
     assert json.loads(capsys.readouterr().out) == [str(path.resolve()) for path in artifacts]
 
@@ -236,11 +252,14 @@ def test_project_bootstrap_installs_an_exact_required_release(
         lambda repository, version, _signers, _signer: (version, tmp_path / repository / "drift"),
     )
 
-    assert _project_bootstrap(
-        argparse.Namespace(install=True, repository="owner/drift"),
-        ProjectSpec("sample"),
-        tmp_path,
-        BuildConfig("test"),
-    ) == 0
+    assert (
+        _project_bootstrap(
+            argparse.Namespace(install=True, repository="owner/drift"),
+            ProjectSpec("sample"),
+            tmp_path,
+            BuildConfig("test"),
+        )
+        == 0
+    )
 
     assert "Installed project-required Drift 99.0.0" in capsys.readouterr().out

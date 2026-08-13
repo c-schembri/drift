@@ -7,7 +7,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from driftbuild.build import build
@@ -143,9 +143,9 @@ def tests_run(
         started = time.perf_counter()
         if suite.exclusive:
             with cache_lock(state_root / "locks" / f"suite-{suite.name}.lock"):
-                tasks_run(ProjectSpec(suite.name, tasks=suite.tasks), (), root, state_root, jobs)
+                tasks_run(replace(project, tasks=suite.tasks), (), root, state_root, jobs, config=config)
         else:
-            tasks_run(ProjectSpec(suite.name, tasks=suite.tasks), (), root, state_root, jobs)
+            tasks_run(replace(project, tasks=suite.tasks), (), root, state_root, jobs, config=config)
         results.append(TestResult(suite.name, True, time.perf_counter() - started, ""))
     result_tuple = tuple(results)
     failures = [result for result in result_tuple if not result.passed]
