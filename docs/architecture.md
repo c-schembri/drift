@@ -13,15 +13,19 @@ Drift separates project policy from execution in seven stages:
 ## State and reproducibility
 
 Project-generated state lives in `.drift`. Verified package sources live under `DRIFT_HOME/store`, and managed tools live
-under `DRIFT_HOME/tools`; both use the platform cache directory when `DRIFT_HOME` is unset. Configuration directories
-are keyed by platform, architecture, compiler selection, and build type. File discovery is sorted, root-confined,
+under `DRIFT_HOME/tools`; shared package builds live under `DRIFT_HOME/binaries`. All use the platform cache directory
+when `DRIFT_HOME` is unset. Configuration directories are keyed by platform, target, architecture, compiler, build type,
+sysroot, toolchain, and provider values. File discovery is sorted, root-confined,
 excludes symlinks, and rejects case collisions. Generated files are replaced only when their bytes change, preserving
 no-op performance.
 
+Shared cache deletion is never implicit. `drift cache status` measures each ownership category, while cleanup requires
+both an explicit category and `--yes`; every deletion target is checked as a strict child of `DRIFT_HOME`.
+
 The runtime uses only the Python standard library. Build-system adapters bootstrap pinned tools on demand. Ninja and
-CMake archives and the Meson wheel have fixed content digests; Conan runs from an isolated environment containing an
-exact package set. Compiler discovery is host-only in v0. Autotools and pkg-config intentionally inspect host tools and
-are therefore host integrations rather than hermetic package formats.
+CMake and vcpkg binaries and the Meson wheel have fixed content digests; Conan runs from an isolated environment containing an
+exact package set. Cross builds select a target triple plus a sysroot or explicit JSON/upstream toolchain file.
+Autotools and pkg-config intentionally inspect host tools and are therefore host integrations rather than hermetic package formats.
 
 ## Boundaries
 

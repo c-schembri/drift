@@ -19,19 +19,16 @@ from driftbuild.model import (
     CompileInterface,
     Dependency,
     LinkInterface,
+    PackageSpec,
     ProjectSpec,
     TargetRef,
     TargetSpec,
 )
+from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
 from driftbuild.toolchain import Toolchain, toolchain_resolve
 
 _SCHEMA_VERSION = 1
-
-
-def _state_key(config: BuildConfig) -> str:
-    values = (config.platform, config.architecture, config.compiler, config.build_type)
-    return "-".join(re.sub(r"[^A-Za-z0-9_.-]", "_", value) for value in values)
 
 
 def _tool(name: str, candidates: tuple[str, ...]) -> str:
@@ -56,6 +53,7 @@ def _configure(
     shell: str,
     make: str,
     environment: dict[str, str],
+    package: PackageSpec | str,
 ) -> None:
     configure = source_root / "configure"
     fingerprint = {
@@ -66,6 +64,9 @@ def _configure(
         "make": make,
         "build_type": config.build_type,
         "architecture": config.architecture,
+        "target": config.target,
+        "options": dict(package.options) if isinstance(package, PackageSpec) else {},
+        "features": list(package.features) if isinstance(package, PackageSpec) else [],
     }
     state_path = build_root / ".drift-import.json"
     cached = False
@@ -77,6 +78,17 @@ def _configure(
     if cached:
         return
     arguments = [shell, str(configure), f"--prefix={install_root}"]
+    if config.target is not None:
+        arguments.append(f"--host={config.target}")
+    if isinstance(package, PackageSpec):
+        for name, value in package.options:
+            if value == "true":
+                arguments.append(f"--enable-{name}")
+            elif value == "false":
+                arguments.append(f"--disable-{name}")
+            else:
+                arguments.append(f"--with-{name}={value}")
+        arguments.extend(f"--enable-{feature}" for feature in package.features)
     if config.build_type != "debug":
         environment = dict(environment)
         environment["CFLAGS"] = "-O2 -DNDEBUG"
@@ -108,16 +120,14 @@ def _package_flags(source_root: Path, package_name: str) -> tuple[tuple[str, ...
     cflags = next((line.split(":", 1)[1] for line in text.splitlines() if line.startswith("Cflags:")), "")
     libs = next((line.split(":", 1)[1] for line in text.splitlines() if line.startswith("Libs:")), "")
     definitions = tuple(value[2:] for value in shlex.split(cflags) if value.startswith("-D"))
-    link_arguments = tuple(
-        value for value in shlex.split(libs) if value.startswith("-l") or value.startswith("-Wl,")
-    )
+    link_arguments = tuple(value for value in shlex.split(libs) if value.startswith("-l") or value.startswith("-Wl,"))
     if not link_arguments:
         library = re.sub(r"^lib", "", package_name, flags=re.IGNORECASE)
         link_arguments = (f"-l{library}",)
     return definitions, link_arguments
 
 
-def project_import(source_root: Path, state_root: Path, config: BuildConfig, package_name: str) -> ProjectSpec:
+def project_import(source_root: Path, state_root: Path, config: BuildConfig, package: PackageSpec | str) -> ProjectSpec:
     """Configure an Autotools project and expose its conventional install interface."""
     if config.platform == "win32":
         raise ConfigurationError("Autotools package import currently requires a POSIX host")
@@ -125,11 +135,11 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
     toolchain = toolchain_resolve(config, tool_root)
     shell = _tool("sh", ("sh",))
     make = _tool("make", ("gmake", "make"))
-    source_key = hashlib.sha256(str(source_root.resolve()).encode("utf-8")).hexdigest()[:16]
-    build_root = state_root / package_name / _state_key(config) / "autotools" / source_key
+    package_name = package.name if isinstance(package, PackageSpec) else package
+    build_root = package_build_root(source_root, package, config, "autotools")
     install_root = build_root / "install"
     environment = _environment(toolchain)
-    _configure(source_root, build_root, install_root, config, shell, make, environment)
+    _configure(source_root, build_root, install_root, config, shell, make, environment, package)
     stamp = install_root / ".drift-installed"
     definitions, link_arguments = _package_flags(source_root, package_name)
     include_dirs = [source_root, build_root, install_root / "include"]
@@ -156,6 +166,7 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
             str(stamp),
         ),
         outputs=(stamp,),
+        implicit_inputs=(build_root / ".drift-import.json", build_root / "Makefile"),
         environment=environment,
         description=f"AUTOTOOLS {package_name}",
         pool="console",

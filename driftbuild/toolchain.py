@@ -114,9 +114,43 @@ def _vc_environment(architecture: str, state_root: Path | None) -> dict[str, str
 
 def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> Toolchain:
     """Resolve the selected host compiler or fail with an actionable error."""
+    if config.toolchain_file is not None and config.toolchain_file.suffix.casefold() == ".json":
+        try:
+            payload = json.loads(config.toolchain_file.read_text(encoding="utf-8"))
+            required = ("family", "cc", "cxx", "linker", "archiver")
+            if not isinstance(payload, dict) or any(not isinstance(payload.get(name), str) for name in required):
+                raise ValueError(f"required string fields are: {', '.join(required)}")
+            environment = dict(os.environ)
+            raw_environment = payload.get("environment", {})
+            if not isinstance(raw_environment, dict) or any(
+                not isinstance(name, str) or not isinstance(value, str) for name, value in raw_environment.items()
+            ):
+                raise ValueError("environment must be an object of string values")
+            environment.update(raw_environment)
+            return Toolchain(
+                payload["family"],
+                payload["cc"],
+                payload["cxx"],
+                payload["linker"],
+                payload["archiver"],
+                environment,
+                str(payload.get("object_suffix", ".obj" if payload["family"] == "msvc" else ".o")),
+                str(payload.get("executable_suffix", ".exe" if config.platform == "win32" else "")),
+                str(payload.get("static_prefix", "" if payload["family"] == "msvc" else "lib")),
+                str(payload.get("static_suffix", ".lib" if payload["family"] == "msvc" else ".a")),
+                str(payload.get("shared_prefix", "" if config.platform == "win32" else "lib")),
+                str(
+                    payload.get(
+                        "shared_suffix",
+                        ".dll" if config.platform == "win32" else ".dylib" if config.platform == "darwin" else ".so",
+                    )
+                ),
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise ConfigurationError(f"Invalid Drift toolchain file {config.toolchain_file}: {error}") from error
     family = config.compiler
     if family == "auto":
-        family = "msvc" if os.name == "nt" else "gcc"
+        family = "clang" if config.target is not None else "msvc" if os.name == "nt" else "gcc"
     if family == "msvc":
         if os.name != "nt":
             raise ConfigurationError("MSVC is only supported on Windows")

@@ -133,6 +133,10 @@ def _compile_flags(
     else:
         flags = ["-D" + value for value in defines] + ["-I" + str(root / value) for value in includes]
         flags += ["-O0", "-g"] if config.build_type == "debug" else ["-O2", "-DNDEBUG"]
+        if config.target is not None and toolchain.family == "clang":
+            flags.append(f"--target={config.target}")
+        if config.sysroot is not None:
+            flags.append(f"--sysroot={config.sysroot}")
         if target.kind == "shared_library":
             flags.append("-fPIC")
     return [*flags, *arguments]
@@ -176,7 +180,7 @@ def _link_inputs(
 
     def link_library(path: Path) -> bool:
         if toolchain.family == "msvc":
-            return path.suffix.casefold() == ".lib"
+            return path.suffix.casefold() in (".lib", ".a")
         name = path.name.casefold()
         return path.suffix.casefold() in (".a", ".so", ".dylib") or ".so." in name
 
@@ -347,6 +351,7 @@ def generate(
             _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
             runner = _shell([sys.executable, "-m", "driftbuild.action", "--spec", str(spec_path)])
             input_text = " ".join(_ninja(path) for path in inputs)
+            implicit_inputs.append(spec_path)
             implicit_text = f" | {' '.join(_ninja(path) for path in implicit_inputs)}" if implicit_inputs else ""
             order_text = f" || {' '.join(_ninja(path) for path in order_only)}" if order_only else ""
             rule = "action" if target.action.deps is None else f"action_{target.action.deps}"
@@ -395,9 +400,7 @@ def generate(
             continue
         link_paths, link_arguments = _link_inputs(target, targets, outputs, root, toolchain)
         inputs = [*object_outputs[target.name], *link_paths]
-        order_inputs = [
-            path for path in _dependency_action_outputs(target, targets, outputs) if path not in inputs
-        ]
+        order_inputs = [path for path in _dependency_action_outputs(target, targets, outputs) if path not in inputs]
         order_text = f" || {' '.join(_ninja(path) for path in order_inputs)}" if order_inputs else ""
         output = outputs[target.name][0]
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -415,7 +418,19 @@ def generate(
                 arguments.append(f"/IMPLIB:{outputs[target.name][1]}")
             rule = "link"
         else:
-            arguments = [toolchain.linker, "-o", str(output), *map(str, inputs), *link_arguments]
+            cross_arguments = []
+            if config.target is not None and toolchain.family == "clang":
+                cross_arguments.append(f"--target={config.target}")
+            if config.sysroot is not None:
+                cross_arguments.append(f"--sysroot={config.sysroot}")
+            arguments = [
+                toolchain.linker,
+                *cross_arguments,
+                "-o",
+                str(output),
+                *map(str, inputs),
+                *link_arguments,
+            ]
             if target.kind == "shared_library":
                 arguments.append("-shared")
             rule = "link"

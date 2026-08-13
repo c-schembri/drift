@@ -36,14 +36,18 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "artifact",
         "benchmark",
         "build",
+        "cache",
         "clean",
         "configure",
+        "doctor",
         "fetch",
         "generate",
         "graph",
+        "inspect",
         "lock",
         "run",
         "task",
+        "targets",
         "test",
     }
     operation_index = next((index for index, value in enumerate(arguments) if value in operations), None)
@@ -62,7 +66,7 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
     return ["--root", str(candidate), *normalized]
 
 
-def _configuration(arguments: argparse.Namespace) -> BuildConfig:
+def _configuration(arguments: argparse.Namespace, root: Path) -> BuildConfig:
     values: dict[str, str] = {}
     for item in arguments.define:
         if "=" not in item:
@@ -72,7 +76,41 @@ def _configuration(arguments: argparse.Namespace) -> BuildConfig:
     architecture = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "arm64"}.get(
         arguments.architecture.casefold(), arguments.architecture.casefold()
     )
-    return BuildConfig(sys.platform, architecture, arguments.compiler, arguments.build_type, values)
+    target = arguments.target
+    target_key = target.casefold() if target is not None else ""
+    if target is not None:
+        architecture = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64"}.get(
+            target.split("-", 1)[0].casefold(), target.split("-", 1)[0].casefold()
+        )
+    selected_platform = (
+        "win32"
+        if "windows" in target_key or "mingw" in target_key
+        else "darwin"
+        if "darwin" in target_key or "apple" in target_key
+        else "linux"
+        if "linux" in target_key
+        else sys.platform
+    )
+
+    def selected_path(value: str | None, label: str) -> Path | None:
+        if value is None:
+            return None
+        path = Path(value)
+        resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+        if not resolved.exists():
+            raise ExecutionError(f"{label} does not exist: {resolved}")
+        return resolved
+
+    return BuildConfig(
+        selected_platform,
+        architecture,
+        arguments.compiler,
+        arguments.build_type,
+        values,
+        target,
+        selected_path(arguments.sysroot, "Sysroot"),
+        selected_path(arguments.toolchain, "Toolchain file"),
+    )
 
 
 def _root(arguments: argparse.Namespace) -> Path:
@@ -88,6 +126,9 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compiler", choices=("auto", "msvc", "gcc", "clang"), default="auto")
     parser.add_argument("--architecture", default=platform.machine().lower() or "x86_64")
     parser.add_argument("--build-type", choices=("debug", "release"), default="debug")
+    parser.add_argument("--target", help="target triple for cross compilation")
+    parser.add_argument("--sysroot", help="target sysroot directory")
+    parser.add_argument("--toolchain", help="Drift JSON or upstream toolchain file")
     parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--offline", action="store_true", help="forbid package network access")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -97,7 +138,27 @@ def _base_parser() -> argparse.ArgumentParser:
     configure_parser.set_defaults(handler=_configure)
     build_parser = commands.add_parser("build", help="build default or named targets")
     build_parser.add_argument("targets", nargs="*")
+    build_parser.add_argument("-j", "--jobs", type=int)
+    build_parser.add_argument("--explain", action="store_true", help="explain why Ninja rebuilds each edge")
+    build_parser.add_argument("--keep-going", action="store_true", help="continue independent work after failures")
+    build_parser.add_argument("--dry-run", action="store_true", help="show pending work without executing it")
     build_parser.set_defaults(handler=_build)
+    doctor_parser = commands.add_parser("doctor", help="check the active project and build environment")
+    doctor_parser.add_argument("--json", action="store_true")
+    doctor_parser.set_defaults(handler=_doctor)
+    cache_parser = commands.add_parser("cache", help="inspect or clean shared Drift caches")
+    cache_commands = cache_parser.add_subparsers(dest="cache_operation", required=True)
+    cache_path_parser = cache_commands.add_parser("path", help="print the shared cache root")
+    cache_path_parser.set_defaults(handler=_cache)
+    cache_status_parser = cache_commands.add_parser("status", help="show cache sizes")
+    cache_status_parser.add_argument("--json", action="store_true")
+    cache_status_parser.set_defaults(handler=_cache)
+    cache_clean_parser = cache_commands.add_parser("clean", help="remove selected shared cache categories")
+    cache_clean_parser.add_argument(
+        "categories", nargs="+", choices=("sources", "binaries", "tools", "conan", "vcpkg", "all")
+    )
+    cache_clean_parser.add_argument("--yes", action="store_true", help="confirm shared cache deletion")
+    cache_clean_parser.set_defaults(handler=_cache)
     clean_parser = commands.add_parser("clean", help="remove outputs for default or named targets")
     clean_parser.add_argument("targets", nargs="*")
     clean_parser.set_defaults(handler=_clean)
@@ -105,11 +166,18 @@ def _base_parser() -> argparse.ArgumentParser:
     lock_parser.set_defaults(handler=_lock)
     fetch_parser = commands.add_parser("fetch", help="download and verify packages from drift.lock")
     fetch_parser.set_defaults(handler=_fetch)
+    inspect_parser = commands.add_parser("inspect", help="show resolved package adapters, inputs, and outputs")
+    inspect_parser.add_argument("names", nargs="*")
+    inspect_parser.set_defaults(handler=_inspect)
     run_parser = commands.add_parser("run", help="build and run an executable target")
     run_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     run_parser.set_defaults(handler=_run)
     graph_parser = commands.add_parser("graph", help="print the validated target graph as JSON")
     graph_parser.set_defaults(handler=_graph)
+    targets_parser = commands.add_parser("targets", help="list declared build targets")
+    targets_parser.add_argument("--all", action="store_true", help="include internal package targets")
+    targets_parser.add_argument("--json", action="store_true")
+    targets_parser.set_defaults(handler=_targets)
     task_parser = commands.add_parser("task", help="run workflow tasks")
     task_parser.add_argument("names", nargs="*")
     task_parser.add_argument("-j", "--jobs", type=int)
@@ -156,7 +224,18 @@ def _configure(arguments: argparse.Namespace, project: ProjectSpec, root: Path, 
 def _build(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
     from driftbuild.build import build, build_timing_render
 
-    result = build(project, root, root / ".drift", config, tuple(arguments.targets))
+    result = build(
+        project,
+        root,
+        root / ".drift",
+        config,
+        tuple(arguments.targets),
+        jobs=arguments.jobs,
+        verbose=arguments.verbose,
+        explain=arguments.explain,
+        keep_going=arguments.keep_going,
+        dry_run=arguments.dry_run,
+    )
     assert result.timing is not None
     print(build_timing_render(result.timing))
     return 0
@@ -182,6 +261,55 @@ def _fetch(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _con
 
     roots = packages_fetch(project, root, offline=arguments.offline)
     print(f"Fetched and verified {len(roots)} package(s)")
+    return 0
+
+
+def _doctor(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.doctor import doctor_run
+
+    result = doctor_run(project, root, config)
+    if arguments.json:
+        print(json.dumps(result, indent=2))
+    else:
+        for check in result["checks"]:
+            print(f"{str(check['status']).upper():7} {check['name']}: {check['detail']}")
+    return 0 if result["ok"] else 1
+
+
+def _cache(arguments: argparse.Namespace, _project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
+    from driftbuild.cache import cache_clean, cache_status, size_render
+    from driftbuild.storage import drift_home
+
+    if arguments.cache_operation == "path":
+        print(drift_home())
+        return 0
+    if arguments.cache_operation == "clean":
+        entries = cache_clean(tuple(arguments.categories), confirmed=arguments.yes)
+        for entry in entries:
+            print(f"Removed {entry.name}: {size_render(entry.bytes)} in {entry.files} file(s)")
+        return 0
+    entries = cache_status()
+    if arguments.json:
+        print(
+            json.dumps(
+                [
+                    {"name": entry.name, "path": str(entry.path), "bytes": entry.bytes, "files": entry.files}
+                    for entry in entries
+                ],
+                indent=2,
+            )
+        )
+    else:
+        for entry in entries:
+            print(f"{entry.name:10} {size_render(entry.bytes):>10}  {entry.files:>7} files  {entry.path}")
+        print(f"total      {size_render(sum(entry.bytes for entry in entries)):>10}")
+    return 0
+
+
+def _inspect(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.inspection import packages_inspect
+
+    print(json.dumps(packages_inspect(project, root, config, tuple(arguments.names), arguments.offline), indent=2))
     return 0
 
 
@@ -243,6 +371,23 @@ def _graph(_arguments: argparse.Namespace, project: ProjectSpec, _root_path: Pat
         for name, target in targets.items()
     }
     print(json.dumps(graph, indent=2, sort_keys=True))
+    return 0
+
+
+def _targets(arguments: argparse.Namespace, project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
+    defaults = {reference.name for reference in project.defaults}
+    targets = [target for target in project.targets if arguments.all or not target.name.startswith("__drift_package_")]
+    if arguments.json:
+        print(
+            json.dumps(
+                [{"name": target.name, "kind": target.kind, "default": target.name in defaults} for target in targets],
+                indent=2,
+            )
+        )
+    else:
+        for target in targets:
+            marker = "*" if target.name in defaults else " "
+            print(f"{marker} {target.name:24} {target.kind}")
     return 0
 
 
@@ -369,10 +514,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw_arguments = list(sys.argv[1:] if argv is None else argv)
         arguments = parser.parse_args(_project_directory_normalize(raw_arguments))
-        root = _root(arguments)
-        config = _configuration(arguments)
-        project = project_load(root, config)
-        if arguments.operation not in ("lock", "fetch"):
+        projectless = arguments.operation == "cache"
+        root = (
+            (Path(arguments.root).resolve() if arguments.root else Path.cwd().resolve())
+            if projectless
+            else _root(arguments)
+        )
+        config = _configuration(arguments, root)
+        project = ProjectSpec("drift-cache") if projectless else project_load(root, config)
+        if arguments.operation not in ("lock", "fetch", "inspect", "doctor", "cache"):
             from driftbuild.packages import packages_compose
 
             project = packages_compose(project, root, config, offline=arguments.offline)

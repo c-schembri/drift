@@ -44,6 +44,7 @@ from driftbuild.model import (
     TargetSpec,
     TaskSpec,
     TestSpec,
+    VcpkgSource,
 )
 
 
@@ -205,7 +206,7 @@ class ProjectApi:
             raise ConfigurationError("Archive sha256 must be 64 lowercase hexadecimal characters")
         return ArchiveSource(url, sha256, strip_prefix)
 
-    def git(self, url: str, revision: str) -> GitSource:
+    def git(self, url: str, revision: str, *, submodules: bool = False) -> GitSource:
         """Declare a Git source pinned to one full commit hash."""
         parsed = urllib.parse.urlparse(url)
         local_path = Path(url).expanduser()
@@ -216,7 +217,26 @@ class ProjectApi:
             raise ConfigurationError("Package source URLs cannot contain credentials")
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
             raise ConfigurationError("Git revision must be a full lowercase commit hash")
-        return GitSource(url, revision)
+        return GitSource(url, revision, submodules)
+
+    def vcpkg_source(
+        self,
+        port: str,
+        baseline: str,
+        *,
+        registry: str = "https://github.com/microsoft/vcpkg",
+        features: Sequence[str] = (),
+    ) -> VcpkgSource:
+        """Declare one vcpkg port against an exact registry baseline."""
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]*", port) is None:
+            raise ConfigurationError(f"Invalid vcpkg port name: {port!r}")
+        if re.fullmatch(r"[0-9a-f]{40}", baseline) is None:
+            raise ConfigurationError("vcpkg baseline must be a full lowercase Git commit hash")
+        if any(re.fullmatch(r"[a-z0-9][a-z0-9-]*", feature) is None for feature in features):
+            raise ConfigurationError("vcpkg features must use lowercase port identifiers")
+        return VcpkgSource(port, baseline, registry, tuple(sorted(set(features))))
+
+    vcpkg = vcpkg_source
 
     def msbuild(
         self,
@@ -238,6 +258,10 @@ class ProjectApi:
         source: PackageSource,
         overlay: str | os.PathLike[str] | None = None,
         build: PackageBuild | None = None,
+        options: Mapping[str, str | bool | int] | None = None,
+        features: Sequence[str] = (),
+        patches: Sequence[str | os.PathLike[str]] = (),
+        adapter: str | None = None,
     ) -> PackageRef:
         """Declare one pinned external project without fetching or executing it."""
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None or name in (".", ".."):
@@ -246,8 +270,43 @@ class ProjectApi:
             raise ConfigurationError(f"Duplicate package name: {name}")
         if overlay is not None and build is not None:
             raise ConfigurationError("Package overlay and build cannot both be specified")
+        supported_adapters = {
+            "autotools",
+            "b2",
+            "cmake",
+            "conan",
+            "make",
+            "meson",
+            "msbuild",
+            "prebuilt",
+            "scons",
+            "vcpkg",
+        }
+        if adapter is not None and adapter not in supported_adapters:
+            raise ConfigurationError(f"Unknown package adapter: {adapter}")
         overlay_path = _safe_relative(self.root, overlay, must_exist=True) if overlay is not None else None
-        self._packages[name] = PackageSpec(name, source, overlay_path, build)
+        normalized_options = tuple(
+            sorted(
+                (key, str(value).lower() if isinstance(value, bool) else str(value))
+                for key, value in (options or {}).items()
+            )
+        )
+        if any(re.fullmatch(r"[A-Za-z0-9_.-]+", key) is None for key, _value in normalized_options):
+            raise ConfigurationError("Package option names contain invalid characters")
+        normalized_features = tuple(sorted(set(features)))
+        if any(re.fullmatch(r"[A-Za-z0-9_.-]+", feature) is None for feature in normalized_features):
+            raise ConfigurationError("Package feature names contain invalid characters")
+        patch_paths = tuple(_safe_relative(self.root, patch, must_exist=True) for patch in patches)
+        self._packages[name] = PackageSpec(
+            name,
+            source,
+            overlay_path,
+            build,
+            normalized_options,
+            normalized_features,
+            patch_paths,
+            adapter,
+        )
         return PackageRef(name)
 
     def public(self, target: TargetRef | PackageTargetRef | PackageRef) -> TargetDependency:

@@ -11,25 +11,41 @@ import time
 from pathlib import Path
 
 from driftbuild import __version__
+from driftbuild.configuration import config_key
+from driftbuild.model import BuildConfig
 
 _OPERATIONS = {
     "artifact",
     "benchmark",
     "build",
+    "cache",
     "clean",
     "command",
     "configure",
+    "doctor",
     "fetch",
     "generate",
     "graph",
+    "inspect",
     "lock",
     "release",
     "remote",
     "run",
     "task",
+    "targets",
     "test",
 }
-_VALUE_OPTIONS = {"--root", "--compiler", "--architecture", "--build-type", "-D", "--define"}
+_VALUE_OPTIONS = {
+    "--root",
+    "--compiler",
+    "--architecture",
+    "--build-type",
+    "--target",
+    "--sysroot",
+    "--toolchain",
+    "-D",
+    "--define",
+}
 
 
 def _value(arguments: list[str], name: str, default: str) -> str:
@@ -74,7 +90,19 @@ def _operation_find(arguments: list[str]) -> tuple[str, int] | None:
         if argument in _VALUE_OPTIONS:
             index += 2
             continue
-        if argument.startswith(("--root=", "--compiler=", "--architecture=", "--build-type=", "--define=", "-D")):
+        if argument.startswith(
+            (
+                "--root=",
+                "--compiler=",
+                "--architecture=",
+                "--build-type=",
+                "--target=",
+                "--sysroot=",
+                "--toolchain=",
+                "--define=",
+                "-D",
+            )
+        ):
             index += 1
             continue
         if argument in ("-v", "--offline"):
@@ -87,6 +115,8 @@ def _operation_find(arguments: list[str]) -> tuple[str, int] | None:
 def _no_op(arguments: list[str]) -> bool:
     operation_found = _operation_find(arguments)
     if operation_found is None or operation_found[0] != "build":
+        return False
+    if any(argument in ("-v", "--verbose", "--explain", "--keep-going", "--dry-run") for argument in arguments):
         return False
     if any(item == "-D" or item.startswith(("-D", "--define")) for item in arguments):
         return False
@@ -104,7 +134,31 @@ def _no_op(arguments: list[str]) -> bool:
     compiler = _value(arguments[:operation], "--compiler", "auto")
     architecture = _value(arguments[:operation], "--architecture", _architecture())
     build_type = _value(arguments[:operation], "--build-type", "debug")
-    key = f"{sys.platform}-{architecture}-{compiler}-{build_type}"
+    target = _value(arguments[:operation], "--target", "") or None
+    if target is not None:
+        architecture = {"aarch64": "arm64", "amd64": "x86_64"}.get(target.split("-", 1)[0], target.split("-", 1)[0])
+    target_key = target.casefold() if target is not None else ""
+    selected_platform = (
+        "win32"
+        if "windows" in target_key or "mingw" in target_key
+        else "darwin"
+        if "darwin" in target_key or "apple" in target_key
+        else "linux"
+        if "linux" in target_key
+        else sys.platform
+    )
+    sysroot = _value(arguments[:operation], "--sysroot", "")
+    toolchain = _value(arguments[:operation], "--toolchain", "")
+    config = BuildConfig(
+        selected_platform,
+        architecture,
+        compiler,
+        build_type,
+        target=target,
+        sysroot=Path(sysroot).resolve() if sysroot else None,
+        toolchain_file=Path(toolchain).resolve() if toolchain else None,
+    )
+    key = config_key(config)
     build_root = root / ".drift" / "build" / key
     ninja = root / ".drift" / "tools" / "ninja" / "1.13.1" / ("ninja.exe" if os.name == "nt" else "ninja")
     if not ninja.is_file() or not (build_root / "build.ninja").is_file():

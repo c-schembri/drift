@@ -44,6 +44,25 @@ sdl = api.package(
 )
 ```
 
+Options, optional features, patches, and submodules are part of the lock and binary-cache identity:
+
+```python
+library = api.package(
+    "library",
+    source=api.git("https://example.invalid/library.git", REVISION, submodules=True),
+    options={"shared": False, "tests": False},
+    features=("simd",),
+    patches=("patches/library.patch",),
+    adapter="meson",  # only needed to override normal manifest detection
+)
+```
+
+vcpkg ports use an exact registry baseline, so the declaration remains minimal and reproducible:
+
+```python
+zlib = api.package("zlib", source=api.vcpkg("zlib", VCPKG_BASELINE))
+```
+
 Drift chooses adapters from repository manifests and the selected host configuration, not from the package name:
 
 - A `conanfile.py` is created and its packaged C/C++ interface is imported.
@@ -51,6 +70,8 @@ Drift chooses adapters from repository manifests and the selected host configura
 - CMake is configured once and queried through its File API codemodel.
 - Meson is configured once and queried through `meson-info`; its generated Ninja graph performs the package build.
 - A generated Autotools `configure` script is configured out of tree and built into a private install prefix.
+- `Jamroot`, `SConstruct`, and `Makefile` select isolated B2, SCons, and Make install adapters.
+- Conventional `include`, `lib`, and `bin` layouts support prebuilt and header-only packages.
 
 Imported builds remain behind explicit Ninja action edges, so no-op Drift builds do not rerun them. `conanfile.txt` is
 a consumer manifest rather than a package recipe and is not treated as a build description.
@@ -58,6 +79,12 @@ a consumer manifest rather than a package recipe and is not treated as a build d
 Drift manages pinned Ninja, CMake, Meson, and Conan tools on demand under `DRIFT_HOME/tools`, shared by all projects.
 Consumers do not install them separately.
 Autotools currently requires host `sh` and `make` and is supported on POSIX hosts.
+
+Configured package builds are shared across projects under `DRIFT_HOME/binaries`, keyed by verified source, adapter,
+options, features, target, sysroot, and toolchain. Run `drift inspect` to see the resolved adapter, provenance, cache path,
+commands, and output hashes for materialized artifacts.
+`drift doctor` additionally verifies the current lock against already cached package content without contacting the
+network, which makes it suitable for CI image and offline-environment diagnostics.
 
 Host-installed libraries can be declared explicitly through pkg-config:
 
@@ -109,7 +136,7 @@ to hold generated Ninja files and configuration-specific outputs.
   rejected.
 - Package credentials are supplied by the system URL or Git credential mechanisms and are never written to `drift.lock`.
 - Package providers and build-system adapters run only after locked content is materialized. CMake configuration writes
-  only beneath the consuming project's `.drift/imports` directory. Local overlays remain available when an upstream
+  only beneath shared content-addressed build directories. Local overlays remain available when an upstream
   cannot be described by a supported adapter.
 - Drift source packages remain a flat, explicitly pinned set. Conan recipes may independently resolve transitive
   dependencies and binary variants; Drift does not duplicate Conan's solver or registry.

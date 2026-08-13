@@ -28,6 +28,7 @@ NINJA_VERSION = "1.13.1"
 CMAKE_VERSION = "3.31.6"
 MESON_VERSION = "1.12.0"
 CONAN_VERSION = "2.31.2"
+VCPKG_VERSION = "2026-07-27"
 
 _MESON_WHEEL = (
     "https://files.pythonhosted.org/packages/07/68/"
@@ -55,6 +56,16 @@ _CONAN_PACKAGES = (
     "six==1.17.0",
 )
 _CONAN_INSTALL_MARKER = f"{CONAN_VERSION}:1"
+_VCPKG_BUNDLE_SHA256 = "55c0af29ee5075feeb94cec3f7ba64f17638deaace930b7ef0b5793ea0e7c379"
+
+_VCPKG_BINARIES = {
+    ("win32", "x86_64"): ("vcpkg.exe", "13b8175e99a884c5ad34249218754b45541a1a63f216e92603aee57a285ac741"),
+    ("win32", "arm64"): ("vcpkg-arm64.exe", "5e8d7acd0f3049411ad1eacd3af2a946014ed430c27010e384ee1289a8e98cbc"),
+    ("linux", "x86_64"): ("vcpkg-glibc", "7e97ef6bcd58f74d079f40d086b801a0222c5d15e4ea0d8d507a538033493d04"),
+    ("linux", "arm64"): ("vcpkg-glibc-arm64", "d7a07b1df2ba45841669effa9890870fa96e74665f12409bb9b0436cc5408ed2"),
+    ("darwin", "x86_64"): ("vcpkg-macos", "352a52151f57e51b0298bdd6f6a825cd4413d3b88d258f456193daf783b3ceec"),
+    ("darwin", "arm64"): ("vcpkg-macos", "352a52151f57e51b0298bdd6f6a825cd4413d3b88d258f456193daf783b3ceec"),
+}
 
 
 def _meson_wrapper_write(install: Path) -> Path:
@@ -172,7 +183,9 @@ def _host_key() -> tuple[str, str]:
     system = platform.system().casefold()
     operating_system = "win32" if system == "windows" else "darwin" if system == "darwin" else "linux"
     machine = platform.machine().casefold()
-    architecture = "arm64" if machine in ("arm64", "aarch64") else "x86_64" if machine in ("amd64", "x86_64") else machine
+    architecture = (
+        "arm64" if machine in ("arm64", "aarch64") else "x86_64" if machine in ("amd64", "x86_64") else machine
+    )
     return operating_system, architecture
 
 
@@ -331,9 +344,7 @@ def meson_command(_state_root: Path, override: str | None = None) -> tuple[str, 
             raise ConfigurationError(f"Cannot download pinned Meson {MESON_VERSION}: {error}") from error
         actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
         if actual != _MESON_WHEEL_SHA256:
-            raise ConfigurationError(
-                f"Meson wheel checksum mismatch: expected {_MESON_WHEEL_SHA256}, got {actual}"
-            )
+            raise ConfigurationError(f"Meson wheel checksum mismatch: expected {_MESON_WHEEL_SHA256}, got {actual}")
         unpacked = temporary_path / "unpacked"
         _archive_extract(wheel, unpacked)
         (unpacked / "drift-meson.py").write_text(_MESON_LAUNCHER, encoding="ascii")
@@ -365,7 +376,11 @@ def conan_resolve(_state_root: Path, override: str | None = None) -> Path:
     install = tool_store_root() / "conan" / CONAN_VERSION
     executable = install / ("Scripts/conan.exe" if os.name == "nt" else "bin/conan")
     marker = install / ".drift-version"
-    if executable.is_file() and marker.is_file() and marker.read_text(encoding="ascii").strip() == _CONAN_INSTALL_MARKER:
+    if (
+        executable.is_file()
+        and marker.is_file()
+        and marker.read_text(encoding="ascii").strip() == _CONAN_INSTALL_MARKER
+    ):
         return executable
 
     install.parent.mkdir(parents=True, exist_ok=True)
@@ -406,4 +421,61 @@ def conan_resolve(_state_root: Path, override: str | None = None) -> Path:
         marker.write_text(_CONAN_INSTALL_MARKER + "\n", encoding="ascii")
     if not executable.is_file():
         raise ConfigurationError(f"Pinned Conan installation did not produce {executable}")
+    return executable
+
+
+def vcpkg_resolve(_state_root: Path, override: str | None = None) -> Path:
+    """Return the verified standalone vcpkg executable for the current host."""
+    selected = override or os.environ.get("DRIFT_VCPKG")
+    if selected:
+        executable = Path(selected).expanduser().resolve()
+        if not executable.is_file():
+            raise ConfigurationError(f"DRIFT_VCPKG does not name a file: {executable}")
+        return executable
+    description = _VCPKG_BINARIES.get(_host_key())
+    if description is None:
+        raise ConfigurationError(f"Pinned vcpkg {VCPKG_VERSION} is unavailable for this host")
+    asset, expected = description
+    install = tool_store_root() / "vcpkg" / VCPKG_VERSION
+    executable = install / ("vcpkg.exe" if os.name == "nt" else "vcpkg")
+    root_marker = install / ".vcpkg-root"
+    if executable.is_file() and root_marker.is_file():
+        actual = hashlib.sha256(executable.read_bytes()).hexdigest()
+        if actual == expected:
+            return executable
+        raise ConfigurationError(f"Cached vcpkg checksum mismatch at {executable}; remove it and retry")
+    install.mkdir(parents=True, exist_ok=True)
+    if not root_marker.is_file():
+        bundle = install / ".standalone-bundle.tar.gz"
+        bundle_url = (
+            f"https://github.com/microsoft/vcpkg-tool/releases/download/{VCPKG_VERSION}/vcpkg-standalone-bundle.tar.gz"
+        )
+        try:
+            with urllib.request.urlopen(bundle_url, timeout=120) as response:
+                with bundle.open("wb") as output:
+                    shutil.copyfileobj(response, output)
+        except OSError as error:
+            raise ConfigurationError(f"Cannot download pinned vcpkg {VCPKG_VERSION} bundle: {error}") from error
+        bundle_actual = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        if bundle_actual != _VCPKG_BUNDLE_SHA256:
+            bundle.unlink(missing_ok=True)
+            raise ConfigurationError(
+                f"vcpkg bundle checksum mismatch: expected {_VCPKG_BUNDLE_SHA256}, got {bundle_actual}"
+            )
+        _archive_extract(bundle, install)
+        bundle.unlink()
+    temporary = install / f".{asset}.download"
+    url = f"https://github.com/microsoft/vcpkg-tool/releases/download/{VCPKG_VERSION}/{asset}"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            with temporary.open("wb") as output:
+                shutil.copyfileobj(response, output)
+    except OSError as error:
+        raise ConfigurationError(f"Cannot download pinned vcpkg {VCPKG_VERSION}: {error}") from error
+    actual = hashlib.sha256(temporary.read_bytes()).hexdigest()
+    if actual != expected:
+        temporary.unlink(missing_ok=True)
+        raise ConfigurationError(f"vcpkg checksum mismatch: expected {expected}, got {actual}")
+    temporary.chmod(temporary.stat().st_mode | stat.S_IXUSR)
+    os.replace(temporary, executable)
     return executable

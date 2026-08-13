@@ -22,8 +22,10 @@ app = api.executable("app", sources=api.files("src/main.cpp"), dependencies=(api
 Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it. `api.pkg_config(name, static=False)` resolves the equivalent interface from a host-installed `.pc` package.
 
 `api.package(...)` declares a locked source package separately from its eventual compile/link interface. Sources are exact
-`api.archive(url, sha256, strip_prefix=...)` or `api.git(url, revision)` values. Drift detects an upstream Drift provider,
-Visual C++ project, CMake or Meson introspection graph, Autotools install, or Conan recipe from the materialized source. Pass the returned package directly to
+`api.archive(url, sha256, strip_prefix=...)`, `api.git(url, revision, submodules=...)`, or
+`api.vcpkg(port, baseline, features=...)` values. `api.package` accepts portable `options`, `features`, `patches`, and an
+optional adapter override. Drift detects upstream Drift, Visual C++, CMake, Meson, Autotools, Conan, Make, B2, SCons,
+prebuilt, and header-only projects from materialized content. Pass the returned package directly to
 `api.public(...)` or `api.private(...)` to use its imported default library. Use `package.target("name")` only to select
 another exported target explicitly. See the [package guide](packages.md) for locking and current limitations.
 

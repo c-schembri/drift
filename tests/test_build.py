@@ -48,3 +48,9 @@ def test_build_timing_render_includes_wall_and_job_times() -> None:
     assert build_timing_render(timing) == (
         "Build timing: total 0.500s | configure 0.020s | ninja 0.450s | compile 0.800s (4 jobs)"
     )
+
+
+def test_build_timing_render_labels_dry_runs() -> None:
+    timing = BuildTiming(0.1, 0.02, 0.08, (), dry_run=True)
+
+    assert build_timing_render(timing).endswith("| dry run")

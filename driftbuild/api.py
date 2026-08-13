@@ -30,6 +30,7 @@ from driftbuild.model import (
     TargetRef,
     TaskSpec,
     TestSpec,
+    VcpkgSource,
 )
 from driftbuild.project import ProjectApi
 
@@ -64,4 +65,5 @@ __all__ = [
     "TargetRef",
     "TaskSpec",
     "TestSpec",
+    "VcpkgSource",
 ]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -20,10 +19,12 @@ from driftbuild.model import (
     CompileInterface,
     Dependency,
     LinkInterface,
+    PackageSpec,
     ProjectSpec,
     TargetRef,
     TargetSpec,
 )
+from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
 from driftbuild.storage import drift_home
 from driftbuild.toolchain import toolchain_resolve
@@ -64,6 +65,7 @@ def _create_arguments(
     response: Path,
     config: BuildConfig,
     offline: bool,
+    options: tuple[tuple[str, str], ...] = (),
 ) -> tuple[str, ...]:
     arguments = [
         str(conan),
@@ -78,6 +80,8 @@ def _create_arguments(
     ]
     if offline:
         arguments.append("--no-remote")
+    for name, value in options:
+        arguments.extend(("-o", f"*:{name}={value}"))
     return tuple(arguments)
 
 
@@ -88,6 +92,7 @@ def _create(
     conan: Path,
     environment: dict[str, str],
     offline: bool,
+    package: PackageSpec | str,
 ) -> Path:
     response = build_root / "graph.json"
     fingerprint = {
@@ -97,6 +102,9 @@ def _create(
         "conan_mtime_ns": conan.stat().st_mtime_ns,
         "configuration": config.build_type,
         "architecture": config.architecture,
+        "target": config.target,
+        "options": dict(package.options) if isinstance(package, PackageSpec) else {},
+        "features": list(package.features) if isinstance(package, PackageSpec) else [],
     }
     state_path = build_root / ".drift-import.json"
     if state_path.is_file() and response.is_file():
@@ -110,7 +118,18 @@ def _create(
     build_root.mkdir(parents=True, exist_ok=True)
     _profile_ensure(conan, environment)
     run(
-        _create_arguments(conan, source_root, response, config, offline),
+        _create_arguments(
+            conan,
+            source_root,
+            response,
+            config,
+            offline,
+            (
+                (*package.options, *((feature, "True") for feature in package.features))
+                if isinstance(package, PackageSpec)
+                else ()
+            ),
+        ),
         cwd=source_root,
         environment=environment,
         capture=True,
@@ -221,8 +240,7 @@ def _interface(
                 (
                     path
                     for path in outputs
-                    if re.sub(r"^lib", "", path.stem.casefold()).startswith(key)
-                    and path.suffix != ".dll"
+                    if re.sub(r"^lib", "", path.stem.casefold()).startswith(key) and path.suffix != ".dll"
                 ),
                 None,
             )
@@ -230,9 +248,7 @@ def _interface(
                 selected.append(match)
         selected.extend(path for path in outputs if path.suffix == ".dll" and path not in selected)
         outputs = selected or outputs
-    runtime_files = tuple(
-        path for path in outputs if path.suffix in (".dll", ".so", ".dylib") or ".so." in path.name
-    )
+    runtime_files = tuple(path for path in outputs if path.suffix in (".dll", ".so", ".dylib") or ".so." in path.name)
     dependency = Dependency(
         str(node.get("ref") or node.get("name") or "conan"),
         CompileInterface(tuple(dict.fromkeys(include_dirs)), tuple(dict.fromkeys(defines)), tuple(compile_arguments)),
@@ -246,15 +262,17 @@ def project_import(
     source_root: Path,
     state_root: Path,
     config: BuildConfig,
-    package_name: str,
+    package: PackageSpec | str,
     *,
     offline: bool = False,
 ) -> ProjectSpec:
     """Create a Conan recipe once and import its packaged C/C++ interface."""
     environment, conan = _environment(state_root, config)
-    source_key = hashlib.sha256(str(source_root.resolve()).encode("utf-8")).hexdigest()[:16]
-    build_root = state_root / package_name / _state_key(config) / "conan" / source_key
-    response = _create(source_root, build_root, config, conan, environment, offline)
+    package_name = package.name if isinstance(package, PackageSpec) else package
+    options = package.options if isinstance(package, PackageSpec) else ()
+    features = package.features if isinstance(package, PackageSpec) else ()
+    build_root = package_build_root(source_root, package, config, "conan")
+    response = _create(source_root, build_root, config, conan, environment, offline, package)
     node = _package_node(_json_read(response))
     deploy_root = build_root / "package"
     _deploy(node, deploy_root)
@@ -278,6 +296,8 @@ def project_import(
             str(conan),
             "--build-type",
             config.build_type,
+            *(value for item in options for value in ("--option", f"{item[0]}={item[1]}")),
+            *(value for feature in features for value in ("--option", f"{feature}=True")),
             *(("--offline",) if offline else ()),
         ),
         outputs=outputs,
@@ -309,10 +329,18 @@ def main() -> int:
     parser.add_argument("--conan", type=Path, required=True)
     parser.add_argument("--build-type", choices=("debug", "release"), required=True)
     parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--option", action="append", default=[])
     arguments = parser.parse_args()
     config = BuildConfig(sys.platform, build_type=arguments.build_type)
     run(
-        _create_arguments(arguments.conan, arguments.source_root, arguments.response, config, arguments.offline),
+        _create_arguments(
+            arguments.conan,
+            arguments.source_root,
+            arguments.response,
+            config,
+            arguments.offline,
+            tuple(value.split("=", 1) for value in arguments.option),
+        ),
         cwd=arguments.source_root,
         environment=os.environ,
         timeout_seconds=1800,

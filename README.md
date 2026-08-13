@@ -3,8 +3,8 @@
 Drift is a typed Python project platform with a fast, deterministic Ninja build backend. It replaces sprawling project scripts with one immutable declaration that can describe native targets, workflows, tests, benchmarks, artifacts, releases, GitHub publication, and explicit remote operations.
 
 Drift 0.1 is experimental. It supports Python 3.12, Windows with MSVC, and Linux and macOS with GCC or Clang.
-Pinned Git and archive packages can be imported through Drift, Conan, CMake, Meson, MSBuild, or Autotools build
-descriptions. Installed system interfaces can be imported explicitly through pkg-config.
+Pinned Git, archive, and vcpkg packages can be imported through Drift, Conan, CMake, Meson, MSBuild, Autotools,
+Make, B2, SCons, prebuilt layouts, or header-only layouts. Installed system interfaces can be imported through pkg-config.
 
 ## Quick start
 
@@ -49,18 +49,24 @@ py -3.12 drift.py test path/to/project
 
 After installing Drift as a command, use `drift build` inside a project or `drift build path/to/project` from elsewhere. `--root` remains available for scripts that prefer an explicit option.
 
-Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, and Conan 2.31.2 are managed on demand under `DRIFT_HOME/tools`; only tools required by the selected dependency adapters are fetched, and each version is installed once per machine. Native archives and the Meson wheel are checked against pinned SHA-256 digests, while Conan is installed with an exact isolated package set. `DRIFT_NINJA`, `DRIFT_CMAKE`, `DRIFT_MESON`, and `DRIFT_CONAN` select explicitly managed executables. Autotools uses the host `sh` and `make`; pkg-config uses host `pkg-config` or `pkgconf`.
+Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, Conan 2.31.2, and vcpkg 2026-07-27 are managed on demand under `DRIFT_HOME/tools`; only selected adapters are fetched. `DRIFT_NINJA`, `DRIFT_CMAKE`, `DRIFT_MESON`, `DRIFT_CONAN`, and `DRIFT_VCPKG` override them. Autotools, Make, B2, SCons, and pkg-config use their corresponding host tools.
 
 ## Commands
 
 - `drift configure` validates the declaration and writes `build.ninja` and `compile_commands.json`.
-- `drift build [targets...]` incrementally builds default or selected targets and reports build phase timings.
+- `drift build [targets...]` incrementally builds targets and reports phase timings; `-j`, `--dry-run`, `--explain`,
+  and `--keep-going` expose useful execution controls without leaking backend syntax.
 - `drift lock` resolves pinned package sources and replaces `drift.lock`.
 - `drift fetch` downloads and verifies every package in `drift.lock`; `--offline` forbids network access.
+- `drift inspect [packages...]` prints resolved adapters, cache keys, commands, outputs, and provenance as JSON.
+- `drift doctor` verifies Python, the active compiler toolchain, Git, locked package sources, and cache location.
+- `drift cache status` reports shared cache usage; `cache path` locates it and `cache clean CATEGORY --yes` removes
+  an explicit `sources`, `binaries`, `tools`, `conan`, `vcpkg`, or `all` category.
 - `drift run [project] [target] [-- arguments...]` builds and launches an executable target.
 - `drift clean [targets...]` removes default or selected target outputs through Ninja.
 - `drift generate visual-studio` writes a solution and Makefile-style projects under `.drift/visual-studio`.
 - `drift graph` prints the validated target graph.
+- `drift targets` lists user targets and marks defaults; `--all` includes imported package targets.
 - `drift task [names...]` executes dependency-aware workflows with retries and resource locks.
 - `drift test`, `drift benchmark`, and `drift artifact` run their typed declarations.
 - `drift release NAME` validates a release; `--publish` delegates publication to authenticated `gh`.
@@ -71,7 +77,10 @@ Builds that execute work report wall-clock total, configure, and Ninja time. Com
 are accumulated job time, so they can exceed wall-clock time when Ninja runs work in parallel. No-op builds report
 their total validation time.
 
-See [the architecture](docs/architecture.md), [API reference](docs/api.md), [package guide](docs/packages.md), [Visual Studio guide](docs/visual-studio.md), [migration guide](docs/migration.md), [native fixture](examples/native), and [SDL3 example](examples/sdl3-window) for the contracts behind those commands.
+Use `--target TRIPLE`, `--sysroot PATH`, and `--toolchain FILE` for cross builds. A Drift toolchain file is JSON with
+`family`, `cc`, `cxx`, `linker`, and `archiver`; CMake `.cmake` and Meson cross files are also forwarded to those adapters.
+
+See [the architecture](docs/architecture.md), [API reference](docs/api.md), [package guide](docs/packages.md), [Visual Studio guide](docs/visual-studio.md), [migration guide](docs/migration.md), [native fixture](examples/native), [SDL3 example](examples/sdl3-window), and [Meson package example](examples/inih) for the contracts behind those commands.
 
 ## Development
 

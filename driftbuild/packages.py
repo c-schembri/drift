@@ -15,7 +15,8 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -36,12 +37,13 @@ from driftbuild.model import (
     TargetDependency,
     TargetRef,
     TargetSpec,
+    VcpkgSource,
 )
 from driftbuild.process import run
 from driftbuild.project import ProjectApi, project_load
 from driftbuild.storage import drift_home
 
-LOCK_VERSION = 1
+LOCK_VERSION = 2
 _MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_ARCHIVE_FILES = 100_000
@@ -54,8 +56,9 @@ class LockedPackage:
     name: str
     request_sha256: str
     content_sha256: str
-    source: ArchiveSource | GitSource
+    source: ArchiveSource | GitSource | VcpkgSource
     overlay: str | None
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -70,7 +73,7 @@ def package_store_root() -> Path:
     return drift_home() / "store"
 
 
-def _source_payload(source: ArchiveSource | GitSource) -> dict[str, str | None]:
+def _source_payload(source: ArchiveSource | GitSource | VcpkgSource) -> dict[str, object]:
     if isinstance(source, ArchiveSource):
         return {
             "kind": "archive",
@@ -78,15 +81,28 @@ def _source_payload(source: ArchiveSource | GitSource) -> dict[str, str | None]:
             "sha256": source.sha256,
             "strip_prefix": source.strip_prefix,
         }
-    return {"kind": "git", "url": source.url, "revision": source.revision}
+    if isinstance(source, GitSource):
+        return {
+            "kind": "git",
+            "url": source.url,
+            "revision": source.revision,
+            "submodules": source.submodules,
+        }
+    return {
+        "kind": "vcpkg",
+        "port": source.port,
+        "baseline": source.baseline,
+        "registry": source.registry,
+        "features": list(source.features),
+    }
 
 
-def _source_cache_key(source: ArchiveSource | GitSource) -> str:
+def _source_cache_key(source: ArchiveSource | GitSource | VcpkgSource) -> str:
     encoded = json.dumps(_source_payload(source), sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _source_index_read(store_root: Path, source: ArchiveSource | GitSource) -> str | None:
+def _source_index_read(store_root: Path, source: ArchiveSource | GitSource | VcpkgSource) -> str | None:
     path = store_root / "requests" / f"{_source_cache_key(source)}.json"
     if not path.is_file():
         return None
@@ -102,7 +118,7 @@ def _source_index_read(store_root: Path, source: ArchiveSource | GitSource) -> s
     return content_sha256
 
 
-def _source_index_write(store_root: Path, source: ArchiveSource | GitSource, content_sha256: str) -> None:
+def _source_index_write(store_root: Path, source: ArchiveSource | GitSource | VcpkgSource, content_sha256: str) -> None:
     directory = store_root / "requests"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{_source_cache_key(source)}.json"
@@ -120,6 +136,16 @@ def _request_sha256(package: PackageSpec, root: Path) -> str:
         "source": _source_payload(package.source),
         "overlay": package.overlay.as_posix() if package.overlay is not None else None,
         "overlay_sha256": overlay_sha256,
+        "options": package.options,
+        "features": package.features,
+        "patches": [
+            {
+                "path": path.as_posix(),
+                "sha256": hashlib.sha256((root / path).read_bytes()).hexdigest(),
+            }
+            for path in package.patches
+        ],
+        "adapter": package.adapter,
         "build": (
             {
                 "kind": "msbuild",
@@ -270,14 +296,53 @@ def _git_checkout(source: GitSource, destination: Path, offline: bool, declarati
     if result.stdout.strip().casefold() != source.revision.casefold():
         raise ConfigurationError(f"Git package resolved to {result.stdout.strip()}, expected {source.revision}")
     has_submodules = (destination / ".gitmodules").is_file()
+    if has_submodules and source.submodules:
+        if offline and not local:
+            raise ConfigurationError("Offline mode cannot fetch uncached Git submodules")
+        run(
+            ("git", "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "--depth", "1"),
+            cwd=destination,
+            capture=True,
+        )
+    elif has_submodules:
+        raise ConfigurationError("Git package contains submodules; declare api.git(..., submodules=True)")
 
     def remove_readonly(function: Any, path: str, _error: Any) -> None:
         os.chmod(path, stat.S_IWRITE)
         function(path)
 
-    shutil.rmtree(destination / ".git", onexc=remove_readonly)
-    if has_submodules:
-        raise ConfigurationError("Git packages with submodules are not supported yet")
+    metadata = sorted(destination.rglob(".git"), key=lambda path: len(path.parts), reverse=True)
+    for path in metadata:
+        if path.is_dir():
+            shutil.rmtree(path, onexc=remove_readonly)
+        else:
+            path.unlink()
+
+
+def _patch_apply(source_root: Path, patch: Path) -> None:
+    try:
+        text = patch.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ConfigurationError(f"Cannot read package patch {patch}: {error}") from error
+    for line in text.splitlines():
+        if not line.startswith(("--- ", "+++ ")):
+            continue
+        value = line[4:].split("\t", 1)[0].strip()
+        if value == "/dev/null":
+            continue
+        parts = PurePosixPath(value.replace("\\", "/")).parts
+        if not parts or ".." in parts or PurePosixPath(value).is_absolute():
+            raise ConfigurationError(f"Package patch path escapes its source root: {value}")
+    command = (
+        "git",
+        "-c",
+        "core.autocrlf=false",
+        "apply",
+        "--ignore-whitespace",
+        "--whitespace=nowarn",
+    )
+    run((*command, "--check", str(patch)), cwd=source_root, capture=True)
+    run((*command, str(patch)), cwd=source_root, capture=True)
 
 
 def _source_prepare(package: PackageSpec, temporary: Path, offline: bool, declaration_root: Path) -> Path:
@@ -302,8 +367,21 @@ def _source_prepare(package: PackageSpec, temporary: Path, offline: bool, declar
                 raise ConfigurationError(
                     f"Package archive does not contain strip_prefix {package.source.strip_prefix!r}"
                 )
-    else:
+    elif isinstance(package.source, GitSource):
         _git_checkout(package.source, source_root, offline, declaration_root)
+    else:
+        source_root.mkdir(parents=True)
+        manifest = {
+            "port": package.source.port,
+            "baseline": package.source.baseline,
+            "registry": package.source.registry,
+            "features": package.source.features,
+        }
+        (source_root / "drift-vcpkg.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    for patch in package.patches:
+        _patch_apply(source_root, (declaration_root / patch).resolve())
     return source_root
 
 
@@ -352,13 +430,28 @@ def _locked_to_json(package: LockedPackage) -> dict[str, object]:
         "content_sha256": package.content_sha256,
         "source": _source_payload(package.source),
         "overlay": package.overlay,
+        "provenance": dict(package.provenance),
     }
 
 
-def _source_from_json(payload: object) -> ArchiveSource | GitSource:
+def _source_from_json(payload: object) -> ArchiveSource | GitSource | VcpkgSource:
     if not isinstance(payload, dict):
         raise ConfigurationError("Package lock source must be an object")
     kind = payload.get("kind")
+    if kind == "vcpkg":
+        port = payload.get("port")
+        baseline = payload.get("baseline")
+        registry = payload.get("registry")
+        features = payload.get("features", [])
+        if (
+            not isinstance(port, str)
+            or not isinstance(baseline, str)
+            or not isinstance(registry, str)
+            or not isinstance(features, list)
+            or not all(isinstance(value, str) for value in features)
+        ):
+            raise ConfigurationError("Invalid vcpkg source in package lock")
+        return VcpkgSource(port, baseline, registry, tuple(features))
     url = payload.get("url")
     if not isinstance(url, str):
         raise ConfigurationError("Package lock source requires a URL")
@@ -372,11 +465,12 @@ def _source_from_json(payload: object) -> ArchiveSource | GitSource:
         return ArchiveSource(url, sha256, strip_prefix)
     if kind == "git":
         revision = payload.get("revision")
-        if not isinstance(revision, str):
+        submodules = payload.get("submodules", False)
+        if not isinstance(revision, str) or not isinstance(submodules, bool):
             raise ConfigurationError("Invalid Git source in package lock")
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
             raise ConfigurationError("Invalid Git revision in package lock")
-        return GitSource(url, revision)
+        return GitSource(url, revision, submodules)
     raise ConfigurationError(f"Unknown package source kind in lock: {kind!r}")
 
 
@@ -387,7 +481,7 @@ def package_lock_read(root: Path) -> PackageLock:
         payload: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ConfigurationError(f"Cannot read {path}; run 'drift lock': {error}") from error
-    if not isinstance(payload, dict) or payload.get("version") != LOCK_VERSION:
+    if not isinstance(payload, dict) or payload.get("version") not in (1, LOCK_VERSION):
         raise ConfigurationError(f"Unsupported or invalid package lock: {path}")
     values = payload.get("packages")
     if not isinstance(values, list):
@@ -400,6 +494,7 @@ def package_lock_read(root: Path) -> PackageLock:
         request_sha256 = value.get("request_sha256")
         content_sha256 = value.get("content_sha256")
         overlay = value.get("overlay")
+        provenance = value.get("provenance", {})
         if not all(isinstance(item, str) for item in (name, request_sha256, content_sha256)):
             raise ConfigurationError("Package lock entry is missing an identity or digest")
         assert isinstance(name, str)
@@ -414,8 +509,17 @@ def package_lock_read(root: Path) -> PackageLock:
             raise ConfigurationError("Package lock contains an invalid package name")
         if overlay is not None and not isinstance(overlay, str):
             raise ConfigurationError("Package lock overlay must be a path or null")
+        if not isinstance(provenance, dict) or not all(isinstance(key, str) for key in provenance):
+            raise ConfigurationError("Package lock provenance must be an object")
         packages.append(
-            LockedPackage(name, request_sha256, content_sha256, _source_from_json(value.get("source")), overlay)
+            LockedPackage(
+                name,
+                request_sha256,
+                content_sha256,
+                _source_from_json(value.get("source")),
+                overlay,
+                provenance,
+            )
         )
     if len({package.name for package in packages}) != len(packages):
         raise ConfigurationError("Package lock contains duplicate package names")
@@ -435,7 +539,7 @@ def package_lock_create(project: ProjectSpec, root: Path, store_root: Path | Non
         expected = (
             existing.content_sha256 if existing is not None and existing.request_sha256 == request_sha256 else None
         )
-        _path, content_sha256 = _source_materialize(
+        path, content_sha256 = _source_materialize(
             package,
             store,
             root,
@@ -443,6 +547,8 @@ def package_lock_create(project: ProjectSpec, root: Path, store_root: Path | Non
             offline=False,
             verify_cached=True,
         )
+        from driftbuild.importers import package_provenance
+
         locked.append(
             LockedPackage(
                 package.name,
@@ -450,6 +556,7 @@ def package_lock_create(project: ProjectSpec, root: Path, store_root: Path | Non
                 content_sha256,
                 package.source,
                 package.overlay.as_posix() if package.overlay is not None else None,
+                package_provenance(path, package, sys.platform),
             )
         )
     result = PackageLock(tuple(locked))
@@ -655,9 +762,7 @@ def _package_project_transform(
                     for value in action.order_only
                 ),
                 depfile=(
-                    _package_output(package.name, action.depfile, extra_roots)
-                    if action.depfile is not None
-                    else None
+                    _package_output(package.name, action.depfile, extra_roots) if action.depfile is not None else None
                 ),
             )
         transformed.append(
@@ -723,20 +828,15 @@ def packages_compose(
         else:
             from driftbuild.importers import project_import
 
-            dependency_project = project_import(
-                package_root,
-                import_root,
-                config,
-                package.name,
-                package.build,
-                offline=offline,
-            )
+            dependency_project = project_import(package_root, import_root, config, package, offline=offline)
             allow_external = True
+        from driftbuild.package_cache import binary_cache_root
+
         targets = _package_project_transform(
             package,
             package_root,
             dependency_project,
-            (import_root,),
+            (import_root, binary_cache_root()),
             allow_external=allow_external,
         )
         package_targets.extend(targets)

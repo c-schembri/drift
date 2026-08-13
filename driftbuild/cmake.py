@@ -6,12 +6,23 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, cast
 
 from driftbuild.bootstrap import cmake_resolve, ninja_resolve
 from driftbuild.errors import ConfigurationError
-from driftbuild.model import ActionSpec, BuildConfig, ProjectSpec, TargetDependency, TargetKind, TargetRef, TargetSpec
+from driftbuild.model import (
+    ActionSpec,
+    BuildConfig,
+    PackageSpec,
+    ProjectSpec,
+    TargetDependency,
+    TargetKind,
+    TargetRef,
+    TargetSpec,
+)
+from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
 from driftbuild.toolchain import toolchain_resolve
 
@@ -21,11 +32,6 @@ _TARGET_KINDS = {"STATIC_LIBRARY", "SHARED_LIBRARY", "MODULE_LIBRARY", "EXECUTAB
 
 def _configuration_name(config: BuildConfig) -> str:
     return "Debug" if config.build_type == "debug" else "Release"
-
-
-def _state_key(config: BuildConfig) -> str:
-    values = (config.platform, config.architecture, config.compiler, config.build_type)
-    return "-".join(re.sub(r"[^A-Za-z0-9_.-]", "_", value) for value in values)
 
 
 def _json_read(path: Path) -> dict[str, Any]:
@@ -62,6 +68,7 @@ def _configure(
     cmake: str,
     ninja: str,
     environment: dict[str, str],
+    package: PackageSpec | str,
 ) -> tuple[Path, dict[str, Any]]:
     query = build_root / ".cmake" / "api" / "v1" / "query" / "codemodel-v2"
     query.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +88,11 @@ def _configure(
         "ninja_size": ninja_stat.st_size,
         "configuration": _configuration_name(config),
         "architecture": config.architecture,
+        "target": config.target,
+        "sysroot": str(config.sysroot) if config.sysroot is not None else None,
+        "toolchain_file": str(config.toolchain_file) if config.toolchain_file is not None else None,
+        "options": dict(package.options) if isinstance(package, PackageSpec) else {},
+        "features": list(package.features) if isinstance(package, PackageSpec) else [],
     }
     state_path = build_root / ".drift-import.json"
     reply_root = build_root / ".cmake" / "api" / "v1" / "reply"
@@ -103,6 +115,17 @@ def _configure(
             f"-DCMAKE_BUILD_TYPE={_configuration_name(config)}",
             "-DBUILD_TESTING=OFF",
         ]
+        if isinstance(package, PackageSpec):
+            arguments.extend(f"-D{name}={value}" for name, value in package.options)
+            arguments.extend(f"-D{feature}=ON" for feature in package.features)
+        if config.target is not None:
+            arguments.extend(
+                (f"-DCMAKE_C_COMPILER_TARGET={config.target}", f"-DCMAKE_CXX_COMPILER_TARGET={config.target}")
+            )
+        if config.sysroot is not None:
+            arguments.append(f"-DCMAKE_SYSROOT={config.sysroot}")
+        if config.toolchain_file is not None and config.toolchain_file.suffix.casefold() == ".cmake":
+            arguments.append(f"-DCMAKE_TOOLCHAIN_FILE={config.toolchain_file}")
         run(arguments, cwd=source_root, environment=environment, capture=True)
         temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(fingerprint, sort_keys=True) + "\n", encoding="utf-8")
@@ -179,16 +202,16 @@ def project_import(
     source_root: Path,
     state_root: Path,
     config: BuildConfig,
-    package_name: str,
+    package: PackageSpec | str,
 ) -> ProjectSpec:
     """Configure CMake once, read its File API graph, and expose buildable targets."""
     tool_root = state_root.parent
     cmake = str(cmake_resolve(tool_root))
     ninja = str(ninja_resolve(tool_root))
     environment = dict(toolchain_resolve(config, tool_root).environment)
-    source_key = hashlib.sha256(str(source_root.resolve()).encode("utf-8")).hexdigest()[:16]
-    build_root = state_root / package_name / _state_key(config) / "cmake" / source_key
-    reply_root, index = _configure(source_root, build_root, config, cmake, ninja, environment)
+    package_name = package.name if isinstance(package, PackageSpec) else package
+    build_root = package_build_root(source_root, package, config, "cmake")
+    reply_root, index = _configure(source_root, build_root, config, cmake, ninja, environment, package)
     codemodel = _json_read(reply_root / _codemodel_file(index))
     configuration = _selected_configuration(codemodel, _configuration_name(config))
     entries = configuration.get("targets")
@@ -228,9 +251,26 @@ def project_import(
                 if dependency_name is not None:
                     dependencies.append(TargetDependency(TargetRef(dependency_name), "public"))
         outputs = _target_outputs(description, build_root)
+        stamp = build_root / ".drift-built" / f"{hashlib.sha256(identifier.encode()).hexdigest()}.stamp"
         action = ActionSpec(
-            command=(cmake, "--build", str(build_root), "--config", configuration_name, "--target", name, "--parallel"),
-            outputs=outputs,
+            command=(
+                sys.executable,
+                "-m",
+                "driftbuild.adapter_action",
+                "--stamp",
+                str(stamp),
+                "--",
+                cmake,
+                "--build",
+                str(build_root),
+                "--config",
+                configuration_name,
+                "--target",
+                name,
+                "--parallel",
+            ),
+            outputs=(*outputs, stamp),
+            implicit_inputs=(build_root / ".drift-import.json", build_root / "CMakeCache.txt"),
             description=f"CMAKE {package_name}:{name}",
             pool="console",
             restat=True,
@@ -242,7 +282,7 @@ def project_import(
                 kind=kind,
                 include_dirs=_target_includes(description),
                 dependencies=tuple(dependencies),
-                outputs=outputs,
+                outputs=action.outputs,
                 action=action,
             )
         )

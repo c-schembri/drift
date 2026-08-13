@@ -9,6 +9,8 @@ from pathlib import Path
 
 from driftbuild import __version__
 from driftbuild.bootstrap import ninja_resolve
+from driftbuild.configuration import config_key
+from driftbuild.errors import ConfigurationError
 from driftbuild.model import BuildConfig, ProjectSpec
 from driftbuild.ninja import GeneratedBuild, generate
 from driftbuild.process import run
@@ -33,6 +35,7 @@ class BuildTiming:
     configure_seconds: float
     ninja_seconds: float
     phases: tuple[BuildPhaseTiming, ...]
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,14 +125,13 @@ def build_timing_render(timing: BuildTiming) -> str:
         for phase in timing.phases
     )
     if not timing.phases:
-        values.append("no work")
+        values.append("dry run" if timing.dry_run else "no work")
     return "Build timing: " + " | ".join(values)
 
 
 def build_root_for(state_root: Path, config: BuildConfig) -> Path:
     """Return the stable build root for a configuration."""
-    key = f"{config.platform}-{config.architecture}-{config.compiler}-{config.build_type}"
-    return state_root / "build" / key
+    return state_root / "build" / config_key(config)
 
 
 def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildConfig) -> BuildResult:
@@ -145,7 +147,17 @@ def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildC
 
 
 def build(
-    project: ProjectSpec, root: Path, state_root: Path, config: BuildConfig, targets: tuple[str, ...] = ()
+    project: ProjectSpec,
+    root: Path,
+    state_root: Path,
+    config: BuildConfig,
+    targets: tuple[str, ...] = (),
+    *,
+    jobs: int | None = None,
+    verbose: bool = False,
+    explain: bool = False,
+    keep_going: bool = False,
+    dry_run: bool = False,
 ) -> BuildResult:
     """Configure and build selected targets with pinned Ninja."""
     started = time.perf_counter()
@@ -154,6 +166,18 @@ def build(
     configure_seconds = time.perf_counter() - configure_started
     ninja = ninja_resolve(state_root)
     arguments = [str(ninja), "-f", result.generated.ninja_file.name]
+    if jobs is not None:
+        if jobs < 1:
+            raise ConfigurationError("Build jobs must be at least one")
+        arguments.extend(("-j", str(jobs)))
+    if verbose:
+        arguments.append("-v")
+    if explain:
+        arguments.extend(("-d", "explain"))
+    if keep_going:
+        arguments.extend(("-k", "0"))
+    if dry_run:
+        arguments.append("-n")
     arguments.extend(targets)
     log_path = result.generated.ninja_file.parent / ".ninja_log"
     log_snapshot = _ninja_log_snapshot(log_path)
@@ -167,6 +191,7 @@ def build(
         configure_seconds,
         ninja_seconds,
         _phase_timings(entries, output_phases),
+        dry_run,
     )
     return BuildResult(result.generated, result.toolchain, timing)
 

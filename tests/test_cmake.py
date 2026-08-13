@@ -40,7 +40,7 @@ target_include_directories(sample PUBLIC include)
     target = project.targets[0]
     assert target.kind == "external_library"
     assert target.action is not None
-    assert target.action.command[1] == "--build"
+    assert "--build" in target.action.command
     assert (source / "include").resolve() in target.include_dirs
     assert target.outputs
 

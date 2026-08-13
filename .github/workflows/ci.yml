@@ -39,3 +39,6 @@ jobs:
       - name: Build SDL3 example
         if: matrix.compiler == 'auto'
         run: uv run drift build examples/sdl3-window
+      - name: Build Meson package example
+        if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'auto'
+        run: uv run drift build examples/inih

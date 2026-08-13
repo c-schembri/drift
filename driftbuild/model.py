@@ -29,6 +29,9 @@ class BuildConfig:
     compiler: str = "auto"
     build_type: str = "debug"
     values: Mapping[str, str] = field(default_factory=dict)
+    target: str | None = None
+    sysroot: Path | None = None
+    toolchain_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -82,9 +85,20 @@ class GitSource:
 
     url: str
     revision: str
+    submodules: bool = False
 
 
-PackageSource: TypeAlias = ArchiveSource | GitSource
+@dataclass(frozen=True)
+class VcpkgSource:
+    """One vcpkg port resolved against an exact registry baseline."""
+
+    port: str
+    baseline: str
+    registry: str = "https://github.com/microsoft/vcpkg"
+    features: tuple[str, ...] = ()
+
+
+PackageSource: TypeAlias = ArchiveSource | GitSource | VcpkgSource
 
 
 @dataclass(frozen=True)
@@ -107,6 +121,10 @@ class PackageSpec:
     source: PackageSource
     overlay: Path | None = None
     build: PackageBuild | None = None
+    options: tuple[tuple[str, str], ...] = ()
+    features: tuple[str, ...] = ()
+    patches: tuple[Path, ...] = ()
+    adapter: str | None = None
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,12 +18,14 @@ from driftbuild.model import (
     CompileInterface,
     Dependency,
     LinkInterface,
+    PackageSpec,
     ProjectSpec,
     TargetDependency,
     TargetKind,
     TargetRef,
     TargetSpec,
 )
+from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
 from driftbuild.toolchain import Toolchain, toolchain_resolve
 
@@ -33,11 +36,6 @@ _TARGET_KINDS: dict[str, TargetKind] = {
     "shared library": "external_library",
     "shared module": "external_library",
 }
-
-
-def _state_key(config: BuildConfig) -> str:
-    values = (config.platform, config.architecture, config.compiler, config.build_type)
-    return "-".join(re.sub(r"[^A-Za-z0-9_.-]", "_", value) for value in values)
 
 
 def _json_read(path: Path) -> Any:
@@ -61,6 +59,8 @@ def _configure(
     meson: tuple[str, ...],
     ninja: Path,
     environment: dict[str, str],
+    package: PackageSpec | str,
+    toolchain: Toolchain,
 ) -> None:
     entry = Path(meson[-1]).resolve()
     fingerprint = {
@@ -72,6 +72,11 @@ def _configure(
         "ninja_mtime_ns": ninja.stat().st_mtime_ns,
         "build_type": config.build_type,
         "architecture": config.architecture,
+        "target": config.target,
+        "sysroot": str(config.sysroot) if config.sysroot is not None else None,
+        "options": dict(package.options) if isinstance(package, PackageSpec) else {},
+        "features": list(package.features) if isinstance(package, PackageSpec) else [],
+        "toolchain_family": toolchain.family,
     }
     state_path = build_root / ".drift-import.json"
     introspection = build_root / "meson-info" / "intro-targets.json"
@@ -83,7 +88,7 @@ def _configure(
             pass
     if cached:
         return
-    arguments = (
+    arguments = [
         *meson,
         "setup",
         str(build_root),
@@ -92,7 +97,27 @@ def _configure(
         "--wrap-mode=nodownload",
         f"--buildtype={'debug' if config.build_type == 'debug' else 'release'}",
         f"--prefix={install_root}",
-    )
+    ]
+    if isinstance(package, PackageSpec):
+        arguments.extend(f"-D{name}={value}" for name, value in package.options)
+        arguments.extend(f"-D{feature}=enabled" for feature in package.features)
+    if toolchain.family == "msvc":
+        arguments.append("-Db_vscrt=mt")
+    if config.toolchain_file is not None and config.toolchain_file.suffix.casefold() in (".ini", ".txt"):
+        arguments.extend(("--cross-file", str(config.toolchain_file)))
+    elif config.target is not None:
+        cross_file = build_root / "drift-cross.ini"
+        system = "windows" if config.platform == "win32" else "darwin" if config.platform == "darwin" else "linux"
+        cpu_family = "aarch64" if config.architecture == "arm64" else config.architecture
+        cross_file.parent.mkdir(parents=True, exist_ok=True)
+        cross_file.write_text(
+            "[binaries]\n"
+            f"c = '{toolchain.cc}'\ncpp = '{toolchain.cxx}'\nar = '{toolchain.archiver}'\n"
+            "[host_machine]\n"
+            f"system = '{system}'\ncpu_family = '{cpu_family}'\ncpu = '{config.architecture}'\nendian = 'little'\n",
+            encoding="utf-8",
+        )
+        arguments.extend(("--cross-file", str(cross_file)))
     run(arguments, cwd=source_root, environment=environment, capture=True)
     temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(fingerprint, sort_keys=True) + "\n", encoding="utf-8")
@@ -169,16 +194,16 @@ def _default_target(package_name: str, targets: tuple[TargetSpec, ...]) -> Targe
     return TargetRef(matches[0].name) if len(matches) == 1 else None
 
 
-def project_import(source_root: Path, state_root: Path, config: BuildConfig, package_name: str) -> ProjectSpec:
+def project_import(source_root: Path, state_root: Path, config: BuildConfig, package: PackageSpec | str) -> ProjectSpec:
     """Configure Meson once and expose its native target graph to Drift."""
     tool_root = state_root.parent
     meson = meson_command(tool_root)
     ninja = ninja_resolve(tool_root)
     toolchain = toolchain_resolve(config, tool_root)
-    source_key = hashlib.sha256(str(source_root.resolve()).encode("utf-8")).hexdigest()[:16]
-    build_root = state_root / package_name / _state_key(config) / "meson" / source_key
+    package_name = package.name if isinstance(package, PackageSpec) else package
+    build_root = package_build_root(source_root, package, config, "meson")
     install_root = build_root / "install"
-    _configure(source_root, build_root, install_root, config, meson, ninja, _environment(toolchain))
+    _configure(source_root, build_root, install_root, config, meson, ninja, _environment(toolchain), package, toolchain)
     payload = _json_read(build_root / "meson-info" / "intro-targets.json")
     if not isinstance(payload, list):
         raise ConfigurationError("Meson introspection target response is not an array")
@@ -227,9 +252,22 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
             if dependency is not None:
                 dependencies.append(dependency)
         build_outputs = tuple(str(output.relative_to(build_root)) for output in outputs)
+        stamp = build_root / ".drift-built" / f"{hashlib.sha256(identifier.encode()).hexdigest()}.stamp"
         action = ActionSpec(
-            command=(str(ninja), "-C", str(build_root), *build_outputs),
-            outputs=outputs,
+            command=(
+                sys.executable,
+                "-m",
+                "driftbuild.adapter_action",
+                "--stamp",
+                str(stamp),
+                "--",
+                str(ninja),
+                "-C",
+                str(build_root),
+                *build_outputs,
+            ),
+            outputs=(*outputs, stamp),
+            implicit_inputs=(build_root / ".drift-import.json", build_root / "build.ninja"),
             environment=_environment(toolchain),
             description=f"MESON {package_name}:{name}",
             pool="console",
@@ -241,7 +279,7 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
                 _TARGET_KINDS[target_type],
                 include_dirs=includes,
                 dependencies=tuple(dependencies),
-                outputs=outputs,
+                outputs=action.outputs,
                 action=action,
             )
         )
