@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,10 +153,56 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
     family = config.compiler
     if family == "auto":
         family = "clang" if config.target is not None else "msvc" if os.name == "nt" else "gcc"
-    if family == "msvc":
+    if config.profile == "emscripten":
+        missing = [tool for tool in ("emcc", "em++", "emar") if shutil.which(tool) is None]
+        if missing:
+            raise ConfigurationError("Emscripten profile requires an activated emsdk; missing: " + ", ".join(missing))
+        return Toolchain("emscripten", "emcc", "em++", "em++", "emar", dict(os.environ), ".o", ".js", "lib", ".a", "lib", ".wasm")
+    if config.profile == "android":
+        ndk_value = os.environ.get("ANDROID_NDK_ROOT") or os.environ.get("ANDROID_NDK_HOME")
+        if ndk_value is None:
+            raise ConfigurationError("Android profile requires ANDROID_NDK_ROOT")
+        host = "windows-x86_64" if os.name == "nt" else "darwin-x86_64" if sys.platform == "darwin" else "linux-x86_64"
+        bin_root = Path(ndk_value) / "toolchains/llvm/prebuilt" / host / "bin"
+        api = config.values.get("android_api", "24")
+        triple = "aarch64-linux-android" if config.architecture == "arm64" else "x86_64-linux-android"
+        suffix = ".cmd" if os.name == "nt" else ""
+        android_cc = bin_root / f"{triple}{api}-clang{suffix}"
+        android_cxx = bin_root / f"{triple}{api}-clang++{suffix}"
+        android_ar = bin_root / ("llvm-ar.exe" if os.name == "nt" else "llvm-ar")
+        if not all(path.is_file() for path in (android_cc, android_cxx, android_ar)):
+            raise ConfigurationError(f"Android NDK toolchain is incomplete under {bin_root}")
+        return Toolchain("clang", str(android_cc), str(android_cxx), str(android_cxx), str(android_ar), dict(os.environ), ".o", "", "lib", ".a", "lib", ".so")
+    if config.profile == "ios":
+        if platform.system() != "Darwin":
+            raise ConfigurationError("iOS profile requires a macOS host with Xcode")
+        tools = {}
+        for name in ("clang", "clang++", "ar"):
+            result = subprocess.run(("xcrun", "--sdk", "iphoneos", "--find", name), capture_output=True, text=True)
+            if result.returncode != 0:
+                raise ConfigurationError(f"iOS profile could not locate {name} through xcrun")
+            tools[name] = result.stdout.strip()
+        environment = dict(os.environ)
+        sdk = subprocess.run(("xcrun", "--sdk", "iphoneos", "--show-sdk-path"), capture_output=True, text=True)
+        if sdk.returncode == 0:
+            environment["SDKROOT"] = sdk.stdout.strip()
+        return Toolchain("clang", tools["clang"], tools["clang++"], tools["clang++"], tools["ar"], environment, ".o", "", "lib", ".a", "lib", ".dylib")
+    if family == "mingw":
+        prefix = f"{config.target or 'x86_64-w64-mingw32'}-"
+        mingw_cc, mingw_cxx, mingw_ar = prefix + "gcc", prefix + "g++", prefix + "ar"
+        missing = [tool for tool in (mingw_cc, mingw_cxx, mingw_ar) if shutil.which(tool) is None]
+        if missing:
+            raise ConfigurationError("MinGW profile is incomplete; missing: " + ", ".join(missing))
+        return Toolchain("gcc", mingw_cc, mingw_cxx, mingw_cxx, mingw_ar, dict(os.environ), ".o", ".exe", "lib", ".a", "", ".dll")
+    if family in ("msvc", "clang-cl"):
         if os.name != "nt":
-            raise ConfigurationError("MSVC is only supported on Windows")
+            raise ConfigurationError(f"{family} is only supported on Windows")
         environment = _vc_environment(config.architecture, state_root)
+        if family == "clang-cl":
+            missing = [tool for tool in ("clang-cl", "lld-link", "llvm-lib") if shutil.which(tool, path=environment.get("PATH")) is None]
+            if missing:
+                raise ConfigurationError("clang-cl profile is incomplete; missing: " + ", ".join(missing))
+            return Toolchain("msvc", "clang-cl", "clang-cl", "lld-link", "llvm-lib", environment, ".obj", ".exe", "", ".lib", "", ".dll")
         return Toolchain("msvc", "cl", "cl", "link", "lib", environment, ".obj", ".exe", "", ".lib", "", ".dll")
     if family not in ("gcc", "clang"):
         raise ConfigurationError(f"Unsupported compiler: {family}")

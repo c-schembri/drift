@@ -57,6 +57,10 @@ library = api.package(
 )
 ```
 
+Git packages are exact by default. A package that intentionally follows an upstream branch or tag can retain an exact
+fallback pin and add `track="refs/heads/main"`. `drift outdated` compares the lock with that ref, and `drift update`
+advances only the lock after fetching and hashing the new source. Untracked packages never move.
+
 vcpkg ports use an exact registry baseline, so the declaration remains minimal and reproducible:
 
 ```python
@@ -81,7 +85,8 @@ Consumers do not install them separately.
 Autotools currently requires host `sh` and `make` and is supported on POSIX hosts.
 
 Configured package builds are shared across projects under `DRIFT_HOME/binaries`, keyed by verified source, adapter,
-options, features, target, sysroot, and toolchain. Run `drift inspect` to see the resolved adapter, provenance, cache path,
+adapter version, options, features, target, sysroot, toolchain file content, and relevant SDK environment. Shared source
+and binary mutations use cross-process locks. Run `drift inspect` to see the resolved adapter, provenance, cache path,
 commands, and output hashes for materialized artifacts.
 `drift doctor` additionally verifies the current lock against already cached package content without contacting the
 network, which makes it suitable for CI image and offline-environment diagnostics.
@@ -125,6 +130,13 @@ Commit `drift.lock`. A normal build may download content already identified by t
 or resolves another revision. `--offline` rejects missing network content. `drift fetch` also rehashes cached source trees
 and reports local corruption.
 
+Packages containing a Drift project may declare their own packages. Drift records every dependency under a scoped lock
+identity, composes it beneath a collision-resistant target namespace, and rejects source cycles before invoking Ninja.
+
+Opaque Make, B2, and SCons projects use their conventional staged install interface. Repositories with non-conventional
+outputs can include `drift-package.json` with `include_dirs`, `defines`, `compile_arguments`, `libraries`, `library_dirs`,
+`link_arguments`, and `runtime_files`; `${source}` and `${prefix}` expand to the immutable source and staged prefix.
+
 Set `DRIFT_HOME` to choose the Drift state directory. Package sources are shared by content digest under
 `DRIFT_HOME/store/sources`; otherwise Drift uses the platform cache directory. The project `.drift` directory continues
 to hold generated Ninja files and configuration-specific outputs.
@@ -138,5 +150,5 @@ to hold generated Ninja files and configuration-specific outputs.
 - Package providers and build-system adapters run only after locked content is materialized. CMake configuration writes
   only beneath shared content-addressed build directories. Local overlays remain available when an upstream
   cannot be described by a supported adapter.
-- Drift source packages remain a flat, explicitly pinned set. Conan recipes may independently resolve transitive
-  dependencies and binary variants; Drift does not duplicate Conan's solver or registry.
+- Drift source packages remain explicitly pinned. Package-owned Drift graphs can be transitive; Conan recipes may also
+  resolve transitive dependencies and binary variants without Drift duplicating Conan's solver.

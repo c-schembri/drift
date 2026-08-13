@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
 from driftbuild.bootstrap import vcpkg_resolve
 from driftbuild.errors import ConfigurationError
+from driftbuild.locking import cache_lock
 from driftbuild.model import (
     ActionSpec,
     BuildConfig,
@@ -110,6 +112,72 @@ def _files(root: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     return libraries, runtime
 
 
+def _owned_files(installed: Path, port: str, build_type: str) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
+    info = installed.parent / "vcpkg" / "info"
+    lists = sorted(info.glob(f"{port}_*.list")) if info.is_dir() else []
+    paths: list[Path] = []
+    for manifest in lists:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            relative = Path(line.strip())
+            parts = relative.parts[1:] if relative.parts[:1] == (installed.name,) else relative.parts
+            path = installed.joinpath(*parts)
+            if path.is_file():
+                paths.append(path.resolve())
+    if not paths:
+        libraries, runtime = _files(installed / ("debug/lib" if build_type == "debug" else "lib"))
+        runtime += _files(installed / ("debug/bin" if build_type == "debug" else "bin"))[1]
+        return libraries, tuple(dict.fromkeys(runtime)), ()
+    debug_prefix = ("debug",) if build_type == "debug" else ()
+    library_roots = {debug_prefix + ("lib",), debug_prefix + ("lib64",)}
+    libraries = tuple(
+        path
+        for path in paths
+        if any(path.relative_to(installed).parts[: len(prefix)] == prefix for prefix in library_roots)
+        and (path.suffix.casefold() in (".a", ".lib", ".so", ".dylib") or ".so." in path.name)
+    )
+    runtime = tuple(
+        path
+        for path in paths
+        if path.suffix.casefold() in (".dll", ".dylib") or ".so." in path.name
+    )
+    pc_files = tuple(path for path in paths if path.suffix.casefold() == ".pc")
+    return libraries, runtime, pc_files
+
+
+def _pc_expand(value: str, variables: dict[str, str]) -> str:
+    for _index in range(16):
+        replaced = value
+        for name, item in variables.items():
+            replaced = replaced.replace("${" + name + "}", item)
+        if replaced == value:
+            return replaced
+        value = replaced
+    return value
+
+
+def _pc_arguments(files: tuple[Path, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    compile_arguments: list[str] = []
+    link_arguments: list[str] = []
+    for path in files:
+        variables: dict[str, str] = {"pcfiledir": str(path.parent)}
+        fields: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" in line and ":" not in line.split("=", 1)[0]:
+                name, value = line.split("=", 1)
+                variables[name.strip()] = value.strip()
+            elif ":" in line:
+                name, value = line.split(":", 1)
+                fields[name.strip()] = value.strip()
+        compile_arguments.extend(shlex.split(_pc_expand(fields.get("Cflags", ""), variables), posix=os.name != "nt"))
+        link_arguments.extend(
+            shlex.split(
+                _pc_expand(" ".join((fields.get("Libs", ""), fields.get("Libs.private", ""))), variables),
+                posix=os.name != "nt",
+            )
+        )
+    return tuple(dict.fromkeys(compile_arguments)), tuple(dict.fromkeys(link_arguments))
+
+
 def project_import(
     source_root: Path,
     state_root: Path,
@@ -124,27 +192,27 @@ def project_import(
     build_root = package_build_root(source_root, package, config, "vcpkg")
     source = package.source
     features = tuple(dict.fromkeys((*source.features, *package.features)))
-    manifest_root = _manifest_write(build_root, source, features)
     triplet = _triplet(config, dict(package.options))
     install_root = build_root / "installed"
     installed = install_root / triplet
     stamp = installed / ".drift-installed"
     executable = vcpkg_resolve(state_root.parent)
     environment = _environment(build_root)
-    if not stamp.is_file():
-        if offline:
-            raise ConfigurationError(f"vcpkg package {package.name} is not available in the offline cache")
-        _install(executable, manifest_root, install_root, triplet, environment)
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
-    libraries, runtime_files = _files(installed / ("debug/lib" if config.build_type == "debug" else "lib"))
-    extra_runtime = _files(installed / ("debug/bin" if config.build_type == "debug" else "bin"))[1]
-    runtime_files = tuple(dict.fromkeys((*runtime_files, *extra_runtime)))
+    with cache_lock(build_root.with_suffix(".lock")):
+        manifest_root = _manifest_write(build_root, source, features)
+        if not stamp.is_file():
+            if offline:
+                raise ConfigurationError(f"vcpkg package {package.name} is not available in the offline cache")
+            _install(executable, manifest_root, install_root, triplet, environment)
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.touch()
+    libraries, runtime_files, pc_files = _owned_files(installed, source.port, config.build_type)
+    pc_compile, pc_link = _pc_arguments(pc_files)
     include = installed / "include"
     dependency = Dependency(
         package.name,
-        CompileInterface((include,)),
-        LinkInterface(libraries),
+        CompileInterface((include,), arguments=pc_compile),
+        LinkInterface(libraries, arguments=pc_link),
         runtime_files,
     )
     action = ActionSpec(
@@ -162,6 +230,8 @@ def project_import(
             triplet,
             "--stamp",
             str(stamp),
+            "--lock",
+            str(build_root.with_suffix(".lock")),
         ),
         outputs=(*libraries, *runtime_files, stamp),
         environment=environment,
@@ -189,16 +259,18 @@ def main() -> int:
     parser.add_argument("--install-root", type=Path, required=True)
     parser.add_argument("--triplet", required=True)
     parser.add_argument("--stamp", type=Path, required=True)
+    parser.add_argument("--lock", type=Path, required=True)
     arguments = parser.parse_args()
-    _install(
-        arguments.vcpkg,
-        arguments.manifest_root,
-        arguments.install_root,
-        arguments.triplet,
-        dict(os.environ),
-    )
-    arguments.stamp.parent.mkdir(parents=True, exist_ok=True)
-    arguments.stamp.touch()
+    with cache_lock(arguments.lock):
+        _install(
+            arguments.vcpkg,
+            arguments.manifest_root,
+            arguments.install_root,
+            arguments.triplet,
+            dict(os.environ),
+        )
+        arguments.stamp.parent.mkdir(parents=True, exist_ok=True)
+        arguments.stamp.touch()
     return 0
 
 

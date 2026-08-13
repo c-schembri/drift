@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
+from driftbuild.locking import cache_lock
 from driftbuild.model import (
     ActionSpec,
     BuildConfig,
@@ -139,7 +140,8 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
     build_root = package_build_root(source_root, package, config, "autotools")
     install_root = build_root / "install"
     environment = _environment(toolchain)
-    _configure(source_root, build_root, install_root, config, shell, make, environment, package)
+    with cache_lock(build_root.with_suffix(".lock")):
+        _configure(source_root, build_root, install_root, config, shell, make, environment, package)
     stamp = install_root / ".drift-installed"
     definitions, link_arguments = _package_flags(source_root, package_name)
     include_dirs = [source_root, build_root, install_root / "include"]
@@ -190,10 +192,11 @@ def main() -> int:
     parser.add_argument("--build-root", type=Path, required=True)
     parser.add_argument("--stamp", type=Path, required=True)
     arguments = parser.parse_args()
-    run((arguments.make, "-C", str(arguments.build_root), f"-j{os.cpu_count() or 1}"))
-    run((arguments.make, "-C", str(arguments.build_root), "install"))
-    arguments.stamp.parent.mkdir(parents=True, exist_ok=True)
-    arguments.stamp.touch()
+    with cache_lock(arguments.build_root.with_suffix(".lock")):
+        run((arguments.make, "-C", str(arguments.build_root), f"-j{os.cpu_count() or 1}"))
+        run((arguments.make, "-C", str(arguments.build_root), "install"))
+        arguments.stamp.parent.mkdir(parents=True, exist_ok=True)
+        arguments.stamp.touch()
     return 0
 
 

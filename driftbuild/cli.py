@@ -44,11 +44,14 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "generate",
         "graph",
         "inspect",
+        "install",
         "lock",
+        "outdated",
         "run",
         "task",
         "targets",
         "test",
+        "update",
     }
     operation_index = next((index for index, value in enumerate(arguments) if value in operations), None)
     if operation_index is None:
@@ -76,13 +79,39 @@ def _configuration(arguments: argparse.Namespace, root: Path) -> BuildConfig:
     architecture = {"amd64": "x86_64", "x86_64": "x86_64", "aarch64": "arm64"}.get(
         arguments.architecture.casefold(), arguments.architecture.casefold()
     )
+    profile = arguments.profile
+    if arguments.unity is not None and arguments.unity < 2:
+        raise ExecutionError("--unity requires a group size of at least 2")
+    if "thread" in arguments.sanitize and len(arguments.sanitize) > 1:
+        raise ExecutionError("thread sanitizer cannot be combined with another sanitizer")
+    selected_compiler = arguments.compiler
+    if selected_compiler == "auto" and profile in ("mingw", "clang-cl"):
+        selected_compiler = profile
+    elif selected_compiler == "auto" and profile in ("android", "ios", "emscripten"):
+        selected_compiler = "clang"
     target = arguments.target
+    profile_targets = {
+        ("android", "arm64"): "aarch64-linux-android",
+        ("android", "x86_64"): "x86_64-linux-android",
+        ("ios", "arm64"): "arm64-apple-ios",
+        ("emscripten", "x86_64"): "wasm32-unknown-emscripten",
+        ("mingw", "x86_64"): "x86_64-w64-mingw32",
+    }
+    if target is None:
+        target = profile_targets.get((profile, architecture))
     target_key = target.casefold() if target is not None else ""
     if target is not None:
         architecture = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64"}.get(
             target.split("-", 1)[0].casefold(), target.split("-", 1)[0].casefold()
         )
     selected_platform = (
+        "emscripten"
+        if profile == "emscripten"
+        else "linux"
+        if profile == "android"
+        else "darwin"
+        if profile == "ios"
+        else
         "win32"
         if "windows" in target_key or "mingw" in target_key
         else "darwin"
@@ -104,12 +133,18 @@ def _configuration(arguments: argparse.Namespace, root: Path) -> BuildConfig:
     return BuildConfig(
         selected_platform,
         architecture,
-        arguments.compiler,
+        selected_compiler,
         arguments.build_type,
         values,
         target,
         selected_path(arguments.sysroot, "Sysroot"),
         selected_path(arguments.toolchain, "Toolchain file"),
+        tuple(dict.fromkeys(arguments.sanitize)),
+        arguments.coverage,
+        arguments.lto,
+        arguments.warnings,
+        arguments.unity or 0,
+        profile,
     )
 
 
@@ -123,12 +158,22 @@ def _base_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"drift {__version__}")
     parser.add_argument("--root", help="project root (otherwise discovered from the current directory)")
-    parser.add_argument("--compiler", choices=("auto", "msvc", "gcc", "clang"), default="auto")
+    parser.add_argument(
+        "--compiler", choices=("auto", "msvc", "gcc", "clang", "mingw", "clang-cl"), default="auto"
+    )
     parser.add_argument("--architecture", default=platform.machine().lower() or "x86_64")
     parser.add_argument("--build-type", choices=("debug", "release"), default="debug")
     parser.add_argument("--target", help="target triple for cross compilation")
     parser.add_argument("--sysroot", help="target sysroot directory")
     parser.add_argument("--toolchain", help="Drift JSON or upstream toolchain file")
+    parser.add_argument(
+        "--profile", choices=("host", "android", "ios", "emscripten", "mingw", "clang-cl"), default="host"
+    )
+    parser.add_argument("--sanitize", action="append", choices=("address", "undefined", "thread"), default=[])
+    parser.add_argument("--coverage", action="store_true")
+    parser.add_argument("--lto", action="store_true")
+    parser.add_argument("--warnings", choices=("default", "all", "error"), default="default")
+    parser.add_argument("--unity", type=int, metavar="FILES", help="combine source files in groups of this size")
     parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--offline", action="store_true", help="forbid package network access")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -159,16 +204,47 @@ def _base_parser() -> argparse.ArgumentParser:
     )
     cache_clean_parser.add_argument("--yes", action="store_true", help="confirm shared cache deletion")
     cache_clean_parser.set_defaults(handler=_cache)
+    cache_export_parser = cache_commands.add_parser("export", help="export shared caches to an archive")
+    cache_export_parser.add_argument("archive", type=Path)
+    cache_export_parser.add_argument(
+        "categories", nargs="*", default=["all"], choices=("sources", "binaries", "tools", "conan", "vcpkg", "all")
+    )
+    cache_export_parser.set_defaults(handler=_cache)
+    cache_import_parser = cache_commands.add_parser("import", help="import a shared cache archive")
+    cache_import_parser.add_argument("archive", type=Path)
+    cache_import_parser.add_argument("--replace", action="store_true")
+    cache_import_parser.set_defaults(handler=_cache)
+    cache_pull_parser = cache_commands.add_parser("pull", help="download and import a remote cache archive")
+    cache_pull_parser.add_argument("url")
+    cache_pull_parser.add_argument("--replace", action="store_true")
+    cache_pull_parser.set_defaults(handler=_cache)
+    cache_push_parser = cache_commands.add_parser("push", help="export and upload shared caches")
+    cache_push_parser.add_argument("url")
+    cache_push_parser.add_argument(
+        "categories", nargs="*", default=["all"], choices=("sources", "binaries", "tools", "conan", "vcpkg", "all")
+    )
+    cache_push_parser.set_defaults(handler=_cache)
     clean_parser = commands.add_parser("clean", help="remove outputs for default or named targets")
     clean_parser.add_argument("targets", nargs="*")
     clean_parser.set_defaults(handler=_clean)
     lock_parser = commands.add_parser("lock", help="resolve exact package sources and replace drift.lock")
+    lock_parser.add_argument("--check", action="store_true", help="fail if drift.lock would change")
+    lock_parser.add_argument("--diff", action="store_true", help="print lock changes")
+    lock_parser.add_argument("--refresh", action="store_true", help="rematerialize exact declared sources")
     lock_parser.set_defaults(handler=_lock)
+    outdated_parser = commands.add_parser("outdated", help="report whether package declarations changed since lock")
+    outdated_parser.set_defaults(handler=_outdated)
+    update_parser = commands.add_parser("update", help="refresh exact package sources and rewrite drift.lock")
+    update_parser.set_defaults(handler=_update)
     fetch_parser = commands.add_parser("fetch", help="download and verify packages from drift.lock")
     fetch_parser.set_defaults(handler=_fetch)
     inspect_parser = commands.add_parser("inspect", help="show resolved package adapters, inputs, and outputs")
     inspect_parser.add_argument("names", nargs="*")
     inspect_parser.set_defaults(handler=_inspect)
+    install_parser = commands.add_parser("install", help="build and install a conventional SDK layout")
+    install_parser.add_argument("targets", nargs="*")
+    install_parser.add_argument("--prefix", type=Path, required=True)
+    install_parser.set_defaults(handler=_install)
     run_parser = commands.add_parser("run", help="build and run an executable target")
     run_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     run_parser.set_defaults(handler=_run)
@@ -210,6 +286,15 @@ def _base_parser() -> argparse.ArgumentParser:
     visual_studio_parser.add_argument("--output", type=Path)
     visual_studio_parser.add_argument("--startup-target")
     visual_studio_parser.set_defaults(handler=_generate_visual_studio)
+    vscode_parser = generators.add_parser("vscode", help="generate VS Code tasks and launch settings")
+    vscode_parser.add_argument("--output", type=Path)
+    vscode_parser.set_defaults(handler=_generate_vscode)
+    xcode_parser = generators.add_parser("xcode", help="generate an Xcode legacy project")
+    xcode_parser.add_argument("--output", type=Path)
+    xcode_parser.set_defaults(handler=_generate_xcode)
+    standalone_parser = commands.add_parser("standalone", help="create a portable Drift zipapp")
+    standalone_parser.add_argument("--output", type=Path, default=Path("drift.pyz"))
+    standalone_parser.set_defaults(handler=_standalone)
     return parser
 
 
@@ -248,11 +333,37 @@ def _clean(arguments: argparse.Namespace, project: ProjectSpec, root: Path, conf
     return 0
 
 
-def _lock(_arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
-    from driftbuild.packages import package_lock_create
+def _lock(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.packages import package_lock_create, package_lock_diff, package_lock_read
 
-    result = package_lock_create(project, root)
+    previous = package_lock_read(root) if (root / "drift.lock").is_file() else None
+    result = package_lock_create(project, root, refresh=arguments.refresh, write=not arguments.check)
+    changes = package_lock_diff(previous, result)
+    if arguments.diff or arguments.check:
+        print("\n".join(changes) if changes else "drift.lock is current")
+    if arguments.check:
+        return 1 if changes else 0
     print(f"Locked {len(result.packages)} package(s) in {root / 'drift.lock'}")
+    return 0
+
+
+def _outdated(_arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.packages import package_lock_create, package_lock_diff, package_lock_read
+
+    previous = package_lock_read(root) if (root / "drift.lock").is_file() else None
+    candidate = package_lock_create(project, root, refresh=True, write=False)
+    changes = package_lock_diff(previous, candidate)
+    print("\n".join(changes) if changes else "All packages are locked at their declared revisions")
+    return 1 if changes else 0
+
+
+def _update(_arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.packages import package_lock_create, package_lock_diff, package_lock_read
+
+    previous = package_lock_read(root) if (root / "drift.lock").is_file() else None
+    updated = package_lock_create(project, root, refresh=True)
+    changes = package_lock_diff(previous, updated)
+    print("\n".join(changes) if changes else "Package sources verified; drift.lock is unchanged")
     return 0
 
 
@@ -277,7 +388,15 @@ def _doctor(arguments: argparse.Namespace, project: ProjectSpec, root: Path, con
 
 
 def _cache(arguments: argparse.Namespace, _project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
-    from driftbuild.cache import cache_clean, cache_status, size_render
+    from driftbuild.cache import (
+        cache_clean,
+        cache_export,
+        cache_import,
+        cache_pull,
+        cache_push,
+        cache_status,
+        size_render,
+    )
     from driftbuild.storage import drift_home
 
     if arguments.cache_operation == "path":
@@ -287,6 +406,19 @@ def _cache(arguments: argparse.Namespace, _project: ProjectSpec, _root: Path, _c
         entries = cache_clean(tuple(arguments.categories), confirmed=arguments.yes)
         for entry in entries:
             print(f"Removed {entry.name}: {size_render(entry.bytes)} in {entry.files} file(s)")
+        return 0
+    if arguments.cache_operation == "export":
+        print(cache_export(arguments.archive.resolve(), tuple(arguments.categories)))
+        return 0
+    if arguments.cache_operation == "import":
+        print(f"Imported {cache_import(arguments.archive.resolve(), replace=arguments.replace)} file(s)")
+        return 0
+    if arguments.cache_operation == "pull":
+        print(f"Imported {cache_pull(arguments.url, replace=arguments.replace)} file(s)")
+        return 0
+    if arguments.cache_operation == "push":
+        cache_push(arguments.url, tuple(arguments.categories))
+        print(f"Pushed cache to {arguments.url}")
         return 0
     entries = cache_status()
     if arguments.json:
@@ -310,6 +442,22 @@ def _inspect(arguments: argparse.Namespace, project: ProjectSpec, root: Path, co
     from driftbuild.inspection import packages_inspect
 
     print(json.dumps(packages_inspect(project, root, config, tuple(arguments.names), arguments.offline), indent=2))
+    return 0
+
+
+def _install(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.build import build
+    from driftbuild.install import project_install
+
+    result = build(project, root, root / ".drift", config, tuple(arguments.targets))
+    manifest = project_install(
+        project,
+        root,
+        arguments.prefix.resolve(),
+        dict(result.generated.outputs),
+        tuple(arguments.targets),
+    )
+    print(manifest)
     return 0
 
 
@@ -348,6 +496,27 @@ def _generate_visual_studio(
         config.values,
     )
     print(result.solution)
+    return 0
+
+
+def _generate_vscode(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.vscode import generate
+
+    print(generate(project, root, config, arguments.output.resolve() if arguments.output else None))
+    return 0
+
+
+def _generate_xcode(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.xcode import generate
+
+    print(generate(project, root, arguments.output.resolve() if arguments.output else None))
+    return 0
+
+
+def _standalone(arguments: argparse.Namespace, _project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
+    from driftbuild.distribution import standalone_create
+
+    print(standalone_create(arguments.output.resolve()))
     return 0
 
 
@@ -514,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw_arguments = list(sys.argv[1:] if argv is None else argv)
         arguments = parser.parse_args(_project_directory_normalize(raw_arguments))
-        projectless = arguments.operation == "cache"
+        projectless = arguments.operation in ("cache", "standalone")
         root = (
             (Path(arguments.root).resolve() if arguments.root else Path.cwd().resolve())
             if projectless
@@ -522,7 +691,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         config = _configuration(arguments, root)
         project = ProjectSpec("drift-cache") if projectless else project_load(root, config)
-        if arguments.operation not in ("lock", "fetch", "inspect", "doctor", "cache"):
+        if arguments.operation not in (
+            "lock",
+            "fetch",
+            "inspect",
+            "outdated",
+            "update",
+            "doctor",
+            "cache",
+            "standalone",
+        ):
             from driftbuild.packages import packages_compose
 
             project = packages_compose(project, root, config, offline=arguments.offline)

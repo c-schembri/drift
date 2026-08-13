@@ -13,7 +13,16 @@ from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate, transitive_targets
-from driftbuild.model import Artifact, BuildConfig, Dependency, ProjectSpec, TargetDependency, TargetRef, TargetSpec
+from driftbuild.model import (
+    Artifact,
+    BuildConfig,
+    BuildInput,
+    Dependency,
+    ProjectSpec,
+    TargetDependency,
+    TargetRef,
+    TargetSpec,
+)
 from driftbuild.toolchain import Toolchain
 
 
@@ -59,6 +68,8 @@ def _target_output(target: TargetSpec, build_root: Path, toolchain: Toolchain) -
         return tuple(build_root / output for output in target.outputs)
     if target.kind == "object_library":
         return ()
+    if target.kind == "executable" and toolchain.family == "emscripten":
+        return build_root / "bin" / f"{target.name}.js", build_root / "bin" / f"{target.name}.wasm"
     if target.kind == "static_library":
         return (build_root / "lib" / f"{toolchain.static_prefix}{target.name}{toolchain.static_suffix}",)
     if target.kind == "shared_library":
@@ -130,16 +141,69 @@ def _compile_flags(
     if toolchain.family == "msvc":
         flags = ["/D" + value for value in defines] + ["/I" + str(root / value) for value in includes]
         flags += ["/Od", "/Z7"] if config.build_type == "debug" else ["/O2", "/DNDEBUG"]
+        if config.warnings != "default":
+            flags.append("/W4")
+        if config.warnings == "error":
+            flags.append("/WX")
+        if config.lto:
+            flags.append("/GL")
+        if config.sanitizers:
+            if config.sanitizers != ("address",):
+                raise ConfigurationError("MSVC supports only --sanitize address")
+            flags.append("/fsanitize=address")
+        if config.coverage:
+            raise ConfigurationError("Coverage instrumentation is not supported by the MSVC backend")
     else:
         flags = ["-D" + value for value in defines] + ["-I" + str(root / value) for value in includes]
         flags += ["-O0", "-g"] if config.build_type == "debug" else ["-O2", "-DNDEBUG"]
-        if config.target is not None and toolchain.family == "clang":
+        if config.target is not None and toolchain.family == "clang" and config.profile != "android":
             flags.append(f"--target={config.target}")
+        if config.profile == "ios" and toolchain.environment.get("SDKROOT"):
+            flags.append(f"-isysroot={toolchain.environment['SDKROOT']}")
         if config.sysroot is not None:
             flags.append(f"--sysroot={config.sysroot}")
         if target.kind == "shared_library":
             flags.append("-fPIC")
+        if config.warnings != "default":
+            flags.extend(("-Wall", "-Wextra"))
+        if config.warnings == "error":
+            flags.append("-Werror")
+        if config.sanitizers:
+            flags.append("-fsanitize=" + ",".join(config.sanitizers))
+        if config.coverage:
+            flags.append("--coverage")
+        if config.lto:
+            flags.append("-flto")
     return [*flags, *arguments]
+
+
+def _unity_sources(target: TargetSpec, root: Path, build_root: Path, group_size: int) -> tuple[BuildInput, ...]:
+    if group_size == 0:
+        return target.sources
+    passthrough: list[BuildInput] = []
+    groups: dict[str, list[Path]] = {"c": [], "cpp": []}
+    for source in target.sources:
+        if not isinstance(source, Path):
+            passthrough.append(source)
+            continue
+        suffix = source.suffix.casefold()
+        language = "c" if suffix == ".c" else "cpp" if suffix in (".cc", ".cpp", ".cxx") else None
+        if language is None:
+            passthrough.append(source)
+        else:
+            groups[language].append(source)
+    unity_root = build_root / "unity" / target.name
+    for language, sources in groups.items():
+        for index in range(0, len(sources), group_size):
+            chunk = sources[index : index + group_size]
+            if len(chunk) == 1:
+                passthrough.append(chunk[0])
+                continue
+            output = unity_root / f"{index // group_size}.{language}"
+            content = "".join(f'#include "{(root / source).resolve().as_posix()}"\n' for source in chunk)
+            _write_if_changed(output, content)
+            passthrough.append(output.resolve())
+    return tuple(passthrough)
 
 
 def _dependency_action_outputs(
@@ -193,6 +257,7 @@ def _link_inputs(
         visited.add(name)
         child = targets[name]
         if child.kind in ("static_library", "shared_library", "external_library"):
+            arguments.extend(child.link_arguments)
             candidates = outputs[child.name]
             if toolchain.family == "msvc" and child.kind == "shared_library":
                 paths.extend(path for path in candidates if path.suffix == ".lib")
@@ -296,7 +361,88 @@ def generate(
 
     for target in project.targets:
         objects: list[Path] = []
-        for index, source in enumerate(target.sources):
+        target_sources = _unity_sources(target, root, build_root, config.unity_size)
+        pch_output: Path | None = None
+        pch_object: Path | None = None
+        pch_include: tuple[str, ...] = ()
+        if target.precompiled_header is not None:
+            header = (root / target.precompiled_header).resolve()
+            languages = {
+                "c" if _source_path(root, source, outputs).suffix.casefold() in (".c", ".m") else "c++"
+                for source in target_sources
+                if _source_path(root, source, outputs).suffix.casefold() in (".c", ".cc", ".cpp", ".cxx", ".m", ".mm")
+            }
+            if len(languages) > 1:
+                raise ConfigurationError(f"Target {target.name} cannot use one precompiled header for mixed C and C++")
+            language = next(iter(languages), "c++")
+            pch_root = build_root / "pch" / target.name
+            pch_root.mkdir(parents=True, exist_ok=True)
+            pch_flags = _compile_flags(target, targets, root, config, toolchain)
+            pch_outputs: tuple[Path, ...]
+            compiler = toolchain.cc if language == "c" else toolchain.cxx
+            wrapper = pch_root / ("drift_pch.c" if language == "c" else "drift_pch.cpp")
+            _write_if_changed(wrapper, f'#include "{header.as_posix()}"\n')
+            if toolchain.family == "msvc":
+                pch_output = pch_root / "drift.pch"
+                pch_object = pch_root / f"drift{toolchain.object_suffix}"
+                pch_include = (f"/Yu{header}", f"/Fp{pch_output}", f"/FI{header}")
+                pch_arguments = [
+                    compiler,
+                    "/nologo",
+                    "/showIncludes",
+                    "/c",
+                    "/TC" if language == "c" else "/TP",
+                    str(wrapper),
+                    f"/Yc{header}",
+                    f"/Fp{pch_output}",
+                    f"/Fo{pch_object}",
+                    f"/FI{header}",
+                    *pch_flags,
+                ]
+                pch_outputs = (pch_output, pch_object)
+            elif toolchain.family == "clang":
+                pch_output = pch_root / "drift.pch"
+                pch_include = ("-include-pch", str(pch_output))
+                pch_arguments = [
+                    compiler,
+                    "-MMD",
+                    f"-MF{pch_output}.d",
+                    "-x",
+                    f"{language}-header",
+                    str(wrapper),
+                    "-o",
+                    str(pch_output),
+                    *pch_flags,
+                ]
+                pch_outputs = (pch_output,)
+            elif toolchain.family == "gcc":
+                forwarding = pch_root / "drift_pch.h"
+                _write_if_changed(forwarding, f'#include "{header.as_posix()}"\n')
+                pch_output = forwarding.with_suffix(".h.gch")
+                pch_include = ("-I" + str(pch_root), "-include", forwarding.name)
+                pch_arguments = [
+                    compiler,
+                    "-MMD",
+                    f"-MF{pch_output}.d",
+                    "-x",
+                    f"{language}-header",
+                    str(forwarding),
+                    "-o",
+                    str(pch_output),
+                    *pch_flags,
+                ]
+                pch_outputs = (pch_output,)
+            else:
+                raise ConfigurationError(f"Precompiled headers are not supported by {toolchain.family}")
+            lines += [
+                f"build {' '.join(_ninja(value) for value in pch_outputs)}: cc {_ninja(header)} {_ninja(wrapper)}",
+                f"  command = {_shell(pch_arguments)}",
+                "",
+            ]
+            output_phases.update((value, "compile") for value in pch_outputs)
+            if pch_object is not None:
+                objects.append(pch_object)
+        for index, source in enumerate(target_sources):
             source_path = _source_path(root, source, outputs)
             if source_path.suffix.lower() not in (".c", ".cc", ".cpp", ".cxx", ".m", ".mm"):
                 continue
@@ -304,6 +450,7 @@ def generate(
             object_path.parent.mkdir(parents=True, exist_ok=True)
             compiler = toolchain.cc if source_path.suffix.lower() in (".c", ".m") else toolchain.cxx
             flags = _compile_flags(target, targets, root, config, toolchain)
+            flags.extend(pch_include)
             if toolchain.family == "msvc":
                 arguments = [compiler, "/nologo", "/showIncludes", "/c", str(source_path), f"/Fo{object_path}", *flags]
             else:
@@ -319,6 +466,8 @@ def generate(
                 ]
             command = _shell(arguments)
             order_inputs = _dependency_action_outputs(target, targets, outputs)
+            if pch_output is not None:
+                order_inputs.append(pch_output)
             order_text = f" || {' '.join(_ninja(path) for path in order_inputs)}" if order_inputs else ""
             lines += [
                 f"build {_ninja(object_path)}: cc {_ninja(source_path)}{order_text}",
@@ -399,6 +548,18 @@ def generate(
         if target.kind not in ("static_library", "shared_library", "executable"):
             continue
         link_paths, link_arguments = _link_inputs(target, targets, outputs, root, toolchain)
+        if toolchain.family == "msvc":
+            if config.lto:
+                link_arguments.append("/LTCG")
+            if config.sanitizers:
+                link_arguments.append("/fsanitize=address")
+        else:
+            if config.sanitizers:
+                link_arguments.append("-fsanitize=" + ",".join(config.sanitizers))
+            if config.coverage:
+                link_arguments.append("--coverage")
+            if config.lto:
+                link_arguments.append("-flto")
         inputs = [*object_outputs[target.name], *link_paths]
         order_inputs = [path for path in _dependency_action_outputs(target, targets, outputs) if path not in inputs]
         order_text = f" || {' '.join(_ninja(path) for path in order_inputs)}" if order_inputs else ""
@@ -419,8 +580,10 @@ def generate(
             rule = "link"
         else:
             cross_arguments = []
-            if config.target is not None and toolchain.family == "clang":
+            if config.target is not None and toolchain.family == "clang" and config.profile != "android":
                 cross_arguments.append(f"--target={config.target}")
+            if config.profile == "ios" and toolchain.environment.get("SDKROOT"):
+                cross_arguments.append(f"-isysroot={toolchain.environment['SDKROOT']}")
             if config.sysroot is not None:
                 cross_arguments.append(f"--sysroot={config.sysroot}")
             arguments = [

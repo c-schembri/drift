@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from driftbuild.bootstrap import cmake_resolve, conan_resolve, meson_resolve, ninja_resolve
 from driftbuild.errors import ConfigurationError
+from driftbuild.locking import cache_lock
 from driftbuild.model import (
     ActionSpec,
     BuildConfig,
@@ -272,10 +273,11 @@ def project_import(
     options = package.options if isinstance(package, PackageSpec) else ()
     features = package.features if isinstance(package, PackageSpec) else ()
     build_root = package_build_root(source_root, package, config, "conan")
-    response = _create(source_root, build_root, config, conan, environment, offline, package)
-    node = _package_node(_json_read(response))
-    deploy_root = build_root / "package"
-    _deploy(node, deploy_root)
+    with cache_lock(build_root.with_suffix(".lock")):
+        response = _create(source_root, build_root, config, conan, environment, offline, package)
+        node = _package_node(_json_read(response))
+        deploy_root = build_root / "package"
+        _deploy(node, deploy_root)
     interface, outputs, runtime_files = _interface(node, config, deploy_root)
     if not outputs:
         stamp = deploy_root / ".drift-installed"
@@ -330,23 +332,26 @@ def main() -> int:
     parser.add_argument("--build-type", choices=("debug", "release"), required=True)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--option", action="append", default=[])
+    parser.add_argument("--lock", type=Path)
     arguments = parser.parse_args()
     config = BuildConfig(sys.platform, build_type=arguments.build_type)
-    run(
-        _create_arguments(
-            arguments.conan,
-            arguments.source_root,
-            arguments.response,
-            config,
-            arguments.offline,
-            tuple(value.split("=", 1) for value in arguments.option),
-        ),
-        cwd=arguments.source_root,
-        environment=os.environ,
-        timeout_seconds=1800,
-    )
-    _deploy(_package_node(_json_read(arguments.response)), arguments.deploy_root)
-    (arguments.deploy_root / ".drift-installed").touch()
+    lock = arguments.lock or arguments.deploy_root.parent.with_suffix(".lock")
+    with cache_lock(lock):
+        run(
+            _create_arguments(
+                arguments.conan,
+                arguments.source_root,
+                arguments.response,
+                config,
+                arguments.offline,
+                tuple(value.split("=", 1) for value in arguments.option),
+            ),
+            cwd=arguments.source_root,
+            environment=os.environ,
+            timeout_seconds=1800,
+        )
+        _deploy(_package_node(_json_read(arguments.response)), arguments.deploy_root)
+        (arguments.deploy_root / ".drift-installed").touch()
     return 0
 
 

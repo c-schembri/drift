@@ -206,7 +206,7 @@ class ProjectApi:
             raise ConfigurationError("Archive sha256 must be 64 lowercase hexadecimal characters")
         return ArchiveSource(url, sha256, strip_prefix)
 
-    def git(self, url: str, revision: str, *, submodules: bool = False) -> GitSource:
+    def git(self, url: str, revision: str, *, submodules: bool = False, track: str | None = None) -> GitSource:
         """Declare a Git source pinned to one full commit hash."""
         parsed = urllib.parse.urlparse(url)
         local_path = Path(url).expanduser()
@@ -217,7 +217,14 @@ class ProjectApi:
             raise ConfigurationError("Package source URLs cannot contain credentials")
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
             raise ConfigurationError("Git revision must be a full lowercase commit hash")
-        return GitSource(url, revision, submodules)
+        if track is not None and (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", track) is None
+            or ".." in track
+            or "//" in track
+            or track.endswith(("/", "."))
+        ):
+            raise ConfigurationError(f"Invalid Git tracking ref: {track!r}")
+        return GitSource(url, revision, submodules, track)
 
     def vcpkg_source(
         self,
@@ -356,6 +363,7 @@ class ProjectApi:
         runtime_files: FileSet | BuildInput | Sequence[BuildInput] | None = None,
         outputs: Sequence[str | os.PathLike[str]] = (),
         action: ActionSpec | None = None,
+        precompiled_header: str | os.PathLike[str] | None = None,
     ) -> TargetRef:
         if not name or any(character.isspace() for character in name):
             raise ConfigurationError(f"Invalid target name: {name!r}")
@@ -376,6 +384,11 @@ class ProjectApi:
             runtime_files=_inputs(runtime_files),
             outputs=tuple(Path(value) for value in outputs),
             action=action,
+            precompiled_header=(
+                _safe_relative(self.root, precompiled_header, must_exist=True)
+                if precompiled_header is not None
+                else None
+            ),
         )
         self._targets[name] = spec
         return TargetRef(name)

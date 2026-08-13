@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, cast
 
 from driftbuild.bootstrap import cmake_resolve, ninja_resolve
 from driftbuild.errors import ConfigurationError
+from driftbuild.locking import cache_lock
 from driftbuild.model import (
     ActionSpec,
     BuildConfig,
@@ -167,6 +169,44 @@ def _target_includes(target: dict[str, Any]) -> tuple[Path, ...]:
     return tuple(result)
 
 
+def _target_compile_interface(target: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    defines: list[str] = []
+    arguments: list[str] = []
+    groups = target.get("compileGroups", [])
+    if not isinstance(groups, list):
+        return (), ()
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        raw_defines = group.get("defines", [])
+        if isinstance(raw_defines, list):
+            defines.extend(
+                value["define"]
+                for value in raw_defines
+                if isinstance(value, dict) and isinstance(value.get("define"), str)
+            )
+        fragments = group.get("compileCommandFragments", [])
+        if isinstance(fragments, list):
+            for value in fragments:
+                if isinstance(value, dict) and isinstance(value.get("fragment"), str):
+                    arguments.extend(shlex.split(value["fragment"], posix=os.name != "nt"))
+    return tuple(dict.fromkeys(defines)), tuple(dict.fromkeys(arguments))
+
+
+def _target_link_arguments(target: dict[str, Any]) -> tuple[str, ...]:
+    link = target.get("link")
+    if not isinstance(link, dict) or not isinstance(link.get("commandFragments"), list):
+        return ()
+    result: list[str] = []
+    for value in link["commandFragments"]:
+        if not isinstance(value, dict) or not isinstance(value.get("fragment"), str):
+            continue
+        role = value.get("role")
+        if role in ("flags", "libraries", "libraryPath", "frameworkPath"):
+            result.extend(shlex.split(value["fragment"], posix=os.name != "nt"))
+    return tuple(result)
+
+
 def _target_outputs(target: dict[str, Any], build_root: Path) -> tuple[Path, ...]:
     artifacts = target.get("artifacts", [])
     if not isinstance(artifacts, list):
@@ -211,7 +251,8 @@ def project_import(
     environment = dict(toolchain_resolve(config, tool_root).environment)
     package_name = package.name if isinstance(package, PackageSpec) else package
     build_root = package_build_root(source_root, package, config, "cmake")
-    reply_root, index = _configure(source_root, build_root, config, cmake, ninja, environment, package)
+    with cache_lock(build_root.with_suffix(".lock")):
+        reply_root, index = _configure(source_root, build_root, config, cmake, ninja, environment, package)
     codemodel = _json_read(reply_root / _codemodel_file(index))
     configuration = _selected_configuration(codemodel, _configuration_name(config))
     entries = configuration.get("targets")
@@ -259,6 +300,8 @@ def project_import(
                 "driftbuild.adapter_action",
                 "--stamp",
                 str(stamp),
+                "--lock",
+                str(build_root.with_suffix(".lock")),
                 "--",
                 cmake,
                 "--build",
@@ -276,11 +319,15 @@ def project_import(
             restat=True,
         )
         kind: TargetKind = "custom" if description.get("type") == "EXECUTABLE" else "external_library"
+        defines, compile_arguments = _target_compile_interface(description)
         targets.append(
             TargetSpec(
                 name=name,
                 kind=kind,
                 include_dirs=_target_includes(description),
+                defines=defines,
+                compile_arguments=compile_arguments,
+                link_arguments=_target_link_arguments(description),
                 dependencies=tuple(dependencies),
                 outputs=action.outputs,
                 action=action,

@@ -25,6 +25,12 @@ def config_payload(config: BuildConfig) -> dict[str, object]:
         "sysroot": str(config.sysroot.resolve()) if config.sysroot is not None else None,
         "toolchain_file": str(config.toolchain_file.resolve()) if config.toolchain_file is not None else None,
         "toolchain_sha256": toolchain_sha256,
+        "sanitizers": list(config.sanitizers),
+        "coverage": config.coverage,
+        "lto": config.lto,
+        "warnings": config.warnings,
+        "unity_size": config.unity_size,
+        "profile": config.profile,
     }
 
 
@@ -33,7 +39,18 @@ def config_key(config: BuildConfig) -> str:
     target = config.target or config.architecture
     readable = "-".join((config.platform, target, config.compiler, config.build_type))
     readable = re.sub(r"[^A-Za-z0-9_.-]", "_", readable)
-    if not config.values and config.target is None and config.sysroot is None and config.toolchain_file is None:
+    if (
+        not config.values
+        and config.target is None
+        and config.sysroot is None
+        and config.toolchain_file is None
+        and not config.sanitizers
+        and not config.coverage
+        and not config.lto
+        and config.warnings == "default"
+        and not config.unity_size
+        and config.profile == "host"
+    ):
         return readable
     encoded = json.dumps(config_payload(config), sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"{readable}-{hashlib.sha256(encoded).hexdigest()[:10]}"

@@ -4,8 +4,9 @@ Drift separates project policy from execution in seven stages:
 
 1. `drift.toml` selects an API version and a typed Python provider.
 2. `ProjectApi` records immutable dataclasses. Provider evaluation must not compile, download, or mutate the source tree.
-3. `drift.lock` fixes external source identities and verified content digests without executing package providers.
-4. Locked package projects are loaded from the content-addressed store and composed under collision-proof target names.
+3. `drift.lock` fixes scoped external source identities and verified content digests without executing build adapters.
+4. Locked package projects and their transitive Drift packages are loaded from the content-addressed store and composed
+   under collision-proof target names.
 5. Graph validation checks identities, references, cycles, outputs, and workflow prerequisites before execution.
 6. The Ninja backend lowers native targets into a stable out-of-tree build and emits `compile_commands.json`.
 7. IDE frontends may project that validated graph for editing and debugging, but delegate builds back to Drift.

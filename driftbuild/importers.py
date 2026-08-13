@@ -51,25 +51,48 @@ def adapter_detect(source_root: Path, package: PackageSpec, platform: str) -> st
     )
 
 
-def package_provenance(source_root: Path, package: PackageSpec, platform: str) -> dict[str, Any]:
-    """Describe the immutable inputs used to choose and configure an adapter."""
+def _adapter_candidates(source_root: Path, package: PackageSpec) -> tuple[str, ...]:
+    if package.adapter is not None:
+        return (package.adapter,)
+    if isinstance(package.source, VcpkgSource):
+        return ("vcpkg",)
+    if isinstance(package.build, MsbuildProject):
+        return ("msbuild",)
+    markers = (
+        ("conanfile.py", "conan"),
+        ("CMakeLists.txt", "cmake"),
+        ("meson.build", "meson"),
+        ("configure", "autotools"),
+        ("Jamroot", "b2"),
+        ("Jamfile", "b2"),
+        ("SConstruct", "scons"),
+        ("Makefile", "make"),
+    )
+    result = [adapter for marker, adapter in markers if (source_root / marker).is_file()]
+    if any(source_root.rglob("*.vcxproj")):
+        result.append("msbuild")
+    if any((source_root / name).is_dir() for name in ("include", "lib", "libs")):
+        result.append("prebuilt")
+    return tuple(dict.fromkeys(result))
+
+
+def package_provenance(source_root: Path, package: PackageSpec, _platform: str) -> dict[str, Any]:
+    """Describe host-independent inputs available for adapter selection."""
+    adapters: tuple[str, ...]
     if package.overlay is not None:
-        adapter = "overlay"
+        adapters = ("overlay",)
     elif (source_root / "drift.toml").is_file():
-        adapter = "drift"
+        adapters = ("drift",)
     else:
-        try:
-            adapter = adapter_detect(source_root, package, platform)
-        except ConfigurationError:
-            adapter = "unresolved"
+        adapters = _adapter_candidates(source_root, package)
     versions = {
         "cmake": CMAKE_VERSION,
         "meson": MESON_VERSION,
         "conan": CONAN_VERSION,
     }
     return {
-        "adapter": adapter,
-        "adapter_version": versions.get(adapter, "host"),
+        "adapters": list(adapters),
+        "adapter_versions": {adapter: versions.get(adapter, "host") for adapter in adapters},
         "options": dict(package.options),
         "features": list(package.features),
         "patches": [path.as_posix() for path in package.patches],

@@ -32,6 +32,12 @@ class BuildConfig:
     target: str | None = None
     sysroot: Path | None = None
     toolchain_file: Path | None = None
+    sanitizers: tuple[str, ...] = ()
+    coverage: bool = False
+    lto: bool = False
+    warnings: Literal["default", "all", "error"] = "default"
+    unity_size: int = 0
+    profile: Literal["host", "android", "ios", "emscripten", "mingw", "clang-cl"] = "host"
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,7 @@ class GitSource:
     url: str
     revision: str
     submodules: bool = False
+    track: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +217,7 @@ class TargetSpec:
     runtime_files: tuple[BuildInput, ...] = ()
     outputs: tuple[Path, ...] = ()
     action: ActionSpec | None = None
+    precompiled_header: Path | None = None
 
 
 @dataclass(frozen=True)

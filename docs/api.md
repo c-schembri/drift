@@ -19,10 +19,13 @@ support = api.static_library(
 app = api.executable("app", sources=api.files("src/main.cpp"), dependencies=(api.private(support),))
 ```
 
+Targets accept `precompiled_header="include/pch.h"`. Global sanitizer, coverage, LTO, warnings, and unity modes are
+configuration selections rather than provider branches, so the same declaration remains portable.
+
 Use `api.public(target)` when a dependency's compile interface should propagate and `api.private(target)` when it should not. `api.dependency(...)` models a prebuilt or interface-only dependency, including include directories, definitions, libraries, link arguments, and runtime files. Drift deliberately does not fetch it. `api.pkg_config(name, static=False)` resolves the equivalent interface from a host-installed `.pc` package.
 
 `api.package(...)` declares a locked source package separately from its eventual compile/link interface. Sources are exact
-`api.archive(url, sha256, strip_prefix=...)`, `api.git(url, revision, submodules=...)`, or
+`api.archive(url, sha256, strip_prefix=...)`, `api.git(url, revision, submodules=..., track=...)`, or
 `api.vcpkg(port, baseline, features=...)` values. `api.package` accepts portable `options`, `features`, `patches`, and an
 optional adapter override. Drift detects upstream Drift, Visual C++, CMake, Meson, Autotools, Conan, Make, B2, SCons,
 prebuilt, and header-only projects from materialized content. Pass the returned package directly to

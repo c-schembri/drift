@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from driftbuild.errors import ConfigurationError
+from driftbuild.locking import cache_lock
 from driftbuild.model import (
     ArchiveSource,
     Artifact,
@@ -43,7 +44,7 @@ from driftbuild.process import run
 from driftbuild.project import ProjectApi, project_load
 from driftbuild.storage import drift_home
 
-LOCK_VERSION = 2
+LOCK_VERSION = 4
 _MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_ARCHIVE_FILES = 100_000
@@ -59,6 +60,7 @@ class LockedPackage:
     source: ArchiveSource | GitSource | VcpkgSource
     overlay: str | None
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    scope: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,12 +84,15 @@ def _source_payload(source: ArchiveSource | GitSource | VcpkgSource) -> dict[str
             "strip_prefix": source.strip_prefix,
         }
     if isinstance(source, GitSource):
-        return {
+        payload: dict[str, object] = {
             "kind": "git",
             "url": source.url,
             "revision": source.revision,
             "submodules": source.submodules,
         }
+        if source.track is not None:
+            payload["track"] = source.track
+        return payload
     return {
         "kind": "vcpkg",
         "port": source.port,
@@ -131,9 +136,13 @@ def _request_sha256(package: PackageSpec, root: Path) -> str:
     overlay_sha256 = None
     if package.overlay is not None:
         overlay_sha256 = hashlib.sha256((root / package.overlay).read_bytes()).hexdigest()
+    source_payload = _source_payload(package.source)
+    if isinstance(package.source, GitSource) and package.source.track is not None:
+        source_payload = dict(source_payload)
+        source_payload.pop("revision")
     payload = {
         "name": package.name,
-        "source": _source_payload(package.source),
+        "source": source_payload,
         "overlay": package.overlay.as_posix() if package.overlay is not None else None,
         "overlay_sha256": overlay_sha256,
         "options": package.options,
@@ -319,6 +328,26 @@ def _git_checkout(source: GitSource, destination: Path, offline: bool, declarati
             path.unlink()
 
 
+def _git_revision_resolve(source: GitSource, declaration_root: Path) -> GitSource:
+    if source.track is None:
+        return source
+    parsed = urllib.parse.urlparse(source.url)
+    local_path = Path(source.url).expanduser()
+    url = source.url
+    if local_path.is_absolute() or parsed.scheme == "" and not source.url.startswith("git@"):
+        url = str((local_path if local_path.is_absolute() else declaration_root / local_path).resolve())
+    result = run(("git", "ls-remote", url, source.track), capture=True)
+    matches = [line.split() for line in result.stdout.splitlines() if line.split()]
+    peeled = {parts[0].casefold() for parts in matches if len(parts) >= 2 and parts[1].endswith("^{}")}
+    revisions = peeled or {parts[0].casefold() for parts in matches if len(parts) >= 2}
+    if len(revisions) != 1:
+        raise ConfigurationError(f"Git tracking ref {source.track!r} did not resolve unambiguously for {source.url}")
+    revision = next(iter(revisions))
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
+        raise ConfigurationError(f"Git tracking ref {source.track!r} resolved to an invalid commit")
+    return replace(source, revision=revision)
+
+
 def _patch_apply(source_root: Path, patch: Path) -> None:
     try:
         text = patch.read_text(encoding="utf-8")
@@ -385,7 +414,7 @@ def _source_prepare(package: PackageSpec, temporary: Path, offline: bool, declar
     return source_root
 
 
-def _source_materialize(
+def _source_materialize_unlocked(
     package: PackageSpec,
     store_root: Path,
     declaration_root: Path,
@@ -423,6 +452,27 @@ def _source_materialize(
         return install, content_sha256
 
 
+def _source_materialize(
+    package: PackageSpec,
+    store_root: Path,
+    declaration_root: Path,
+    *,
+    expected_content: str | None,
+    offline: bool,
+    verify_cached: bool,
+) -> tuple[Path, str]:
+    lock = store_root / "locks" / f"{_source_cache_key(package.source)}.lock"
+    with cache_lock(lock):
+        return _source_materialize_unlocked(
+            package,
+            store_root,
+            declaration_root,
+            expected_content=expected_content,
+            offline=offline,
+            verify_cached=verify_cached,
+        )
+
+
 def _locked_to_json(package: LockedPackage) -> dict[str, object]:
     return {
         "name": package.name,
@@ -431,6 +481,7 @@ def _locked_to_json(package: LockedPackage) -> dict[str, object]:
         "source": _source_payload(package.source),
         "overlay": package.overlay,
         "provenance": dict(package.provenance),
+        "scope": package.scope,
     }
 
 
@@ -470,7 +521,10 @@ def _source_from_json(payload: object) -> ArchiveSource | GitSource | VcpkgSourc
             raise ConfigurationError("Invalid Git source in package lock")
         if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
             raise ConfigurationError("Invalid Git revision in package lock")
-        return GitSource(url, revision, submodules)
+        track = payload.get("track")
+        if track is not None and not isinstance(track, str):
+            raise ConfigurationError("Invalid Git tracking ref in package lock")
+        return GitSource(url, revision, submodules, track)
     raise ConfigurationError(f"Unknown package source kind in lock: {kind!r}")
 
 
@@ -481,7 +535,7 @@ def package_lock_read(root: Path) -> PackageLock:
         payload: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ConfigurationError(f"Cannot read {path}; run 'drift lock': {error}") from error
-    if not isinstance(payload, dict) or payload.get("version") not in (1, LOCK_VERSION):
+    if not isinstance(payload, dict) or payload.get("version") not in (1, 2, 3, LOCK_VERSION):
         raise ConfigurationError(f"Unsupported or invalid package lock: {path}")
     values = payload.get("packages")
     if not isinstance(values, list):
@@ -495,6 +549,7 @@ def package_lock_read(root: Path) -> PackageLock:
         content_sha256 = value.get("content_sha256")
         overlay = value.get("overlay")
         provenance = value.get("provenance", {})
+        scope = value.get("scope", "")
         if not all(isinstance(item, str) for item in (name, request_sha256, content_sha256)):
             raise ConfigurationError("Package lock entry is missing an identity or digest")
         assert isinstance(name, str)
@@ -511,6 +566,10 @@ def package_lock_read(root: Path) -> PackageLock:
             raise ConfigurationError("Package lock overlay must be a path or null")
         if not isinstance(provenance, dict) or not all(isinstance(key, str) for key in provenance):
             raise ConfigurationError("Package lock provenance must be an object")
+        if not isinstance(scope, str) or scope and any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", part) is None for part in scope.split("/")
+        ):
+            raise ConfigurationError("Package lock scope must contain package-name path segments")
         packages.append(
             LockedPackage(
                 name,
@@ -519,59 +578,127 @@ def package_lock_read(root: Path) -> PackageLock:
                 _source_from_json(value.get("source")),
                 overlay,
                 provenance,
+                scope,
             )
         )
-    if len({package.name for package in packages}) != len(packages):
-        raise ConfigurationError("Package lock contains duplicate package names")
+    if len({(package.scope, package.name) for package in packages}) != len(packages):
+        raise ConfigurationError("Package lock contains duplicate scoped package names")
     return PackageLock(tuple(packages))
 
 
-def package_lock_create(project: ProjectSpec, root: Path, store_root: Path | None = None) -> PackageLock:
+def package_lock_create(
+    project: ProjectSpec,
+    root: Path,
+    store_root: Path | None = None,
+    *,
+    refresh: bool = False,
+    write: bool = True,
+) -> PackageLock:
     """Resolve exact package declarations, materialize them, and replace drift.lock."""
     store = store_root or package_store_root()
-    previous: dict[str, LockedPackage] = {}
+    previous: dict[tuple[str, str], LockedPackage] = {}
     if (root / "drift.lock").is_file():
-        previous = {package.name: package for package in package_lock_read(root).packages}
+        previous = {(package.scope, package.name): package for package in package_lock_read(root).packages}
     locked: list[LockedPackage] = []
-    for package in sorted(project.packages, key=lambda item: item.name):
-        request_sha256 = _request_sha256(package, root)
-        existing = previous.get(package.name)
-        expected = (
-            existing.content_sha256 if existing is not None and existing.request_sha256 == request_sha256 else None
-        )
-        path, content_sha256 = _source_materialize(
-            package,
-            store,
-            root,
-            expected_content=expected,
-            offline=False,
-            verify_cached=True,
-        )
-        from driftbuild.importers import package_provenance
+    visiting: set[str] = set()
 
-        locked.append(
-            LockedPackage(
-                package.name,
-                request_sha256,
-                content_sha256,
-                package.source,
-                package.overlay.as_posix() if package.overlay is not None else None,
-                package_provenance(path, package, sys.platform),
+    def resolve(packages: tuple[PackageSpec, ...], declaration_root: Path, scope: str) -> None:
+        for package in sorted(packages, key=lambda item: item.name):
+            request_sha256 = _request_sha256(package, declaration_root)
+            existing = previous.get((scope, package.name))
+            locked_source = package.source
+            if isinstance(package.source, GitSource) and package.source.track is not None:
+                if (
+                    not refresh
+                    and existing is not None
+                    and existing.request_sha256 == request_sha256
+                    and isinstance(existing.source, GitSource)
+                ):
+                    locked_source = existing.source
+                else:
+                    locked_source = _git_revision_resolve(package.source, declaration_root)
+            resolved_package = replace(package, source=locked_source)
+            expected = (
+                existing.content_sha256
+                if not refresh and existing is not None and existing.request_sha256 == request_sha256
+                else None
             )
-        )
+            path, content_sha256 = _source_materialize(
+                resolved_package,
+                store,
+                declaration_root,
+                expected_content=expected,
+                offline=False,
+                verify_cached=True,
+            )
+            from driftbuild.importers import package_provenance
+
+            locked.append(
+                LockedPackage(
+                    package.name,
+                    request_sha256,
+                    content_sha256,
+                    locked_source,
+                    package.overlay.as_posix() if package.overlay is not None else None,
+                    package_provenance(path, resolved_package, sys.platform),
+                    scope,
+                )
+            )
+            identity = _source_cache_key(locked_source)
+            if identity in visiting:
+                chain = "/".join(part for part in (scope, package.name) if part)
+                raise ConfigurationError(f"Transitive package cycle detected at {chain}")
+            nested: ProjectSpec | None = None
+            if package.overlay is not None:
+                try:
+                    nested = _overlay_load(
+                        declaration_root / package.overlay, path, BuildConfig(sys.platform), package.name
+                    )
+                except ConfigurationError:
+                    # Existing overlays may describe only a subset of package
+                    # files. Composition reports their concrete provider error.
+                    nested = None
+            elif package.build is None and (path / "drift.toml").is_file():
+                nested = project_load(path, BuildConfig(sys.platform))
+            if nested is not None and nested.packages:
+                visiting.add(identity)
+                child_scope = "/".join(part for part in (scope, package.name) if part)
+                resolve(nested.packages, path, child_scope)
+                visiting.remove(identity)
+
+    resolve(project.packages, root, "")
     result = PackageLock(tuple(locked))
     payload = {"version": LOCK_VERSION, "packages": [_locked_to_json(package) for package in result.packages]}
     encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    path = root / "drift.lock"
-    temporary = path.with_suffix(".lock.tmp")
-    temporary.write_bytes(encoded)
-    os.replace(temporary, path)
+    if write:
+        path = root / "drift.lock"
+        temporary = path.with_suffix(".lock.tmp")
+        temporary.write_bytes(encoded)
+        os.replace(temporary, path)
     return result
+
+
+def package_lock_diff(before: PackageLock | None, after: PackageLock) -> tuple[str, ...]:
+    """Return a stable human-readable package lock change summary."""
+    previous = {(package.scope, package.name): package for package in before.packages} if before is not None else {}
+    current = {(package.scope, package.name): package for package in after.packages}
+    changes: list[str] = []
+    for key in sorted(previous.keys() - current.keys()):
+        changes.append(f"- {'/'.join(part for part in key if part)}")
+    for key in sorted(current.keys() - previous.keys()):
+        changes.append(f"+ {'/'.join(part for part in key if part)} {current[key].content_sha256[:12]}")
+    for key in sorted(previous.keys() & current.keys()):
+        old = previous[key]
+        new = current[key]
+        if _locked_to_json(old) != _locked_to_json(new):
+            name = "/".join(part for part in key if part)
+            changes.append(f"~ {name} {old.content_sha256[:12]} -> {new.content_sha256[:12]}")
+    return tuple(changes)
 
 
 def _locked_validate(project: ProjectSpec, root: Path, lock: PackageLock) -> dict[str, LockedPackage]:
     requested = {package.name: package for package in project.packages}
-    locked = {package.name: package for package in lock.packages}
+    locked = {package.name: package for package in lock.packages if not package.scope}
     if requested.keys() != locked.keys():
         raise ConfigurationError("drift.lock package set is stale; run 'drift lock'")
     for name, package in requested.items():
@@ -595,8 +722,9 @@ def packages_fetch(
     locked = _locked_validate(project, root, package_lock_read(root))
     roots: dict[str, Path] = {}
     for package in sorted(project.packages, key=lambda item: item.name):
+        resolved_package = replace(package, source=locked[package.name].source)
         roots[package.name], _digest = _source_materialize(
-            package,
+            resolved_package,
             store,
             root,
             expected_content=locked[package.name].content_sha256,
@@ -630,9 +758,10 @@ def _overlay_load(path: Path, package_root: Path, config: BuildConfig, package_n
 
 
 def _package_target_name(package: str, target: str) -> str:
+    package_readable = re.sub(r"[^A-Za-z0-9_.-]", "_", package)
     readable = re.sub(r"[^A-Za-z0-9_.-]", "_", target)
-    digest = hashlib.sha256(target.encode("utf-8")).hexdigest()[:12]
-    return f"__drift_package_{package}_{readable}_{digest}"
+    digest = hashlib.sha256(f"{package}\0{target}".encode("utf-8")).hexdigest()[:12]
+    return f"__drift_package_{package_readable}_{readable}_{digest}"
 
 
 def _package_path(
@@ -713,14 +842,14 @@ def _dependency_rebase(
 
 def _package_project_transform(
     package: PackageSpec,
+    package_namespace: str,
     package_root: Path,
     project: ProjectSpec,
+    transitive_exports: Mapping[tuple[str, str], str],
     extra_roots: tuple[Path, ...] = (),
     *,
     allow_external: bool = False,
 ) -> tuple[TargetSpec, ...]:
-    if project.packages:
-        raise ConfigurationError(f"Package {package.name} declares transitive packages; this is not supported yet")
     if (
         project.pools
         or project.commands
@@ -733,7 +862,7 @@ def _package_project_transform(
         or project.github is not None
     ):
         raise ConfigurationError(f"Package {package.name} must expose only build targets")
-    names = {target.name: _package_target_name(package.name, target.name) for target in project.targets}
+    names = {target.name: _package_target_name(package_namespace, target.name) for target in project.targets}
     transformed: list[TargetSpec] = []
     for target in project.targets:
         dependencies: list[Dependency | TargetDependency] = []
@@ -741,10 +870,18 @@ def _package_project_transform(
             if isinstance(dependency, Dependency):
                 dependencies.append(_dependency_rebase(dependency, package_root, extra_roots, allow_external))
             elif isinstance(dependency.target, PackageTargetRef):
-                raise ConfigurationError(f"Package {package.name} target {target.name} uses a transitive package")
+                key = dependency.target.package, dependency.target.target
+                selected = transitive_exports.get(key)
+                if selected is None:
+                    if not key[1]:
+                        raise ConfigurationError(
+                            f"Transitive package {key[0]} does not have one unambiguous default target"
+                        )
+                    raise ConfigurationError(f"Transitive package target does not exist: @{key[0]}//{key[1]}")
+                dependencies.append(TargetDependency(TargetRef(selected), dependency.visibility))
             else:
                 dependencies.append(TargetDependency(TargetRef(names[dependency.target.name]), dependency.visibility))
-        outputs = tuple(_package_output(package.name, output, extra_roots) for output in target.outputs)
+        outputs = tuple(_package_output(package_namespace, output, extra_roots) for output in target.outputs)
         action = target.action
         if action is not None:
             action = replace(
@@ -762,7 +899,9 @@ def _package_project_transform(
                     for value in action.order_only
                 ),
                 depfile=(
-                    _package_output(package.name, action.depfile, extra_roots) if action.depfile is not None else None
+                    _package_output(package_namespace, action.depfile, extra_roots)
+                    if action.depfile is not None
+                    else None
                 ),
             )
         transformed.append(
@@ -792,6 +931,16 @@ def _package_project_transform(
                 ),
                 outputs=outputs,
                 action=action,
+                precompiled_header=(
+                    _package_path(
+                        package_root,
+                        target.precompiled_header,
+                        extra_roots,
+                        allow_external=allow_external,
+                    )
+                    if target.precompiled_header is not None
+                    else None
+                ),
             )
         )
     return tuple(transformed)
@@ -808,21 +957,36 @@ def packages_compose(
     """Load locked package projects and compose their namespaced targets into the root graph."""
     if not project.packages:
         return project
-    package_roots = packages_fetch(
-        project,
-        root,
-        store_root=store_root,
-        offline=offline,
-        verify_cached=False,
-    )
+    store = store_root or package_store_root()
+    lock = package_lock_read(root)
+    _locked_validate(project, root, lock)
+    locked = {(package.scope, package.name): package for package in lock.packages}
     package_targets: list[TargetSpec] = []
     exported: dict[tuple[str, str], str] = {}
-    for package in sorted(project.packages, key=lambda item: item.name):
-        package_root = package_roots[package.name]
+
+    def compose_one(
+        package: PackageSpec, declaration_root: Path, scope: str
+    ) -> tuple[tuple[TargetSpec, ...], dict[str, str]]:
+        lock_entry = locked.get((scope, package.name))
+        if lock_entry is None or _request_sha256(package, declaration_root) != lock_entry.request_sha256:
+            qualified = "/".join(part for part in (scope, package.name) if part)
+            raise ConfigurationError(f"drift.lock entry for {qualified} is stale; run 'drift lock'")
+        resolved_package = replace(package, source=lock_entry.source)
+        package_root, _digest = _source_materialize(
+            resolved_package,
+            store,
+            declaration_root,
+            expected_content=lock_entry.content_sha256,
+            offline=offline,
+            verify_cached=False,
+        )
+        namespace = "/".join(part for part in (scope, package.name) if part)
         import_root = root / ".drift" / "imports"
         allow_external = False
         if package.overlay is not None:
-            dependency_project = _overlay_load(root / package.overlay, package_root, config, package.name)
+            dependency_project = _overlay_load(
+                declaration_root / package.overlay, package_root, config, package.name
+            )
         elif package.build is None and (package_root / "drift.toml").is_file():
             dependency_project = project_load(package_root, config)
         else:
@@ -832,23 +996,36 @@ def packages_compose(
             allow_external = True
         from driftbuild.package_cache import binary_cache_root
 
+        nested_targets: list[TargetSpec] = []
+        nested_exports: dict[tuple[str, str], str] = {}
+        for child in sorted(dependency_project.packages, key=lambda item: item.name):
+            child_targets, child_export = compose_one(child, package_root, namespace)
+            nested_targets.extend(child_targets)
+            nested_exports.update({(child.name, name): value for name, value in child_export.items()})
         targets = _package_project_transform(
             package,
+            namespace,
             package_root,
             dependency_project,
+            nested_exports,
             (import_root, binary_cache_root()),
             allow_external=allow_external,
         )
-        package_targets.extend(targets)
-        exported.update(
-            ((package.name, original.name), transformed.name)
+        current_exports = {
+            original.name: transformed.name
             for original, transformed in zip(dependency_project.targets, targets, strict=True)
-        )
+        }
         default_names = [reference.name for reference in dependency_project.defaults]
         if len(default_names) == 1:
-            exported[(package.name, "")] = _package_target_name(package.name, default_names[0])
+            current_exports[""] = _package_target_name(namespace, default_names[0])
         elif not default_names and len(dependency_project.targets) == 1:
-            exported[(package.name, "")] = targets[0].name
+            current_exports[""] = targets[0].name
+        return tuple((*nested_targets, *targets)), current_exports
+
+    for package in sorted(project.packages, key=lambda item: item.name):
+        targets, package_exports = compose_one(package, root, "")
+        package_targets.extend(targets)
+        exported.update({(package.name, name): value for name, value in package_exports.items()})
 
     local_targets: list[TargetSpec] = []
     for target in project.targets:
