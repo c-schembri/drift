@@ -34,7 +34,7 @@ def package_build_root(
     toolchain_digest: str | None = None
     if config.toolchain_file is not None and config.toolchain_file.is_file():
         toolchain_digest = hashlib.sha256(config.toolchain_file.read_bytes()).hexdigest()
-    environment = {
+    environment = {} if config.hermetic else {
         name: os.environ[name]
         for name in (
             "CC",

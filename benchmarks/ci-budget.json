@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "platforms": {
+    "linux": {
+      "configure_median_seconds": 0.5,
+      "no_op_build_median_seconds": 0.5
+    },
+    "darwin": {
+      "configure_median_seconds": 0.75,
+      "no_op_build_median_seconds": 0.75
+    },
+    "win32": {
+      "configure_median_seconds": 1.0,
+      "no_op_build_median_seconds": 1.0
+    }
+  }
+}

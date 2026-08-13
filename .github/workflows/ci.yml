@@ -38,7 +38,7 @@ jobs:
           DRIFT_TEST_COMPILER: ${{ matrix.compiler }}
       - name: Measure Drift overhead
         if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'auto'
-        run: uv run drift perf examples/native --repetitions 5 --json
+        run: uv run drift perf examples/native --repetitions 5 --budget benchmarks/ci-budget.json --json
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'auto'
         with:

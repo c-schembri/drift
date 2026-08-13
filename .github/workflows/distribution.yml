@@ -55,7 +55,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
       - uses: actions/download-artifact@v5
         with:
           path: artifacts
@@ -66,8 +72,19 @@ jobs:
             tar -czf "$name.tar.gz" -C "$directory" .
           done
           sha256sum drift-*.tar.gz > SHA256SUMS
+      - name: Generate release audit
+        run: |
+          uv sync --locked
+          uv run drift audit --output release-audit
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "drift-*.tar.gz"
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             drift-*.tar.gz
             SHA256SUMS
+            release-audit/sbom.cdx.json
+            release-audit/THIRD_PARTY_LICENSES.txt
+            scripts/install.sh
+            scripts/install.ps1

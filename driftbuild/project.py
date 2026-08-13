@@ -48,6 +48,9 @@ from driftbuild.model import (
     VcpkgSource,
 )
 
+API_VERSION = 1
+SUPPORTED_API_VERSIONS = frozenset({0, API_VERSION})
+
 
 def _safe_relative(root: Path, value: str | os.PathLike[str], *, must_exist: bool) -> Path:
     path = Path(value)
@@ -74,9 +77,10 @@ def _inputs(values: FileSet | BuildInput | Sequence[BuildInput] | None) -> tuple
 class ProjectApi:
     """Builds one immutable project declaration for a selected configuration."""
 
-    def __init__(self, root: Path, config: BuildConfig):
+    def __init__(self, root: Path, config: BuildConfig, api_version: int = API_VERSION):
         self.root = root.resolve()
         self.config = config
+        self.api_version = api_version
         self._targets: dict[str, TargetSpec] = {}
         self._packages: dict[str, PackageSpec] = {}
         self._commands: list[CommandSpec] = []
@@ -548,8 +552,12 @@ def project_load(root: Path, config: BuildConfig) -> ProjectSpec:
     project = manifest.get("project")
     if not isinstance(project, dict):
         raise ConfigurationError("drift.toml requires a [project] table")
-    if project.get("api-version") != 0:
-        raise ConfigurationError("drift.toml requires project.api-version = 0")
+    api_version = project.get("api-version")
+    if not isinstance(api_version, int) or isinstance(api_version, bool):
+        raise ConfigurationError("project.api-version must be an integer")
+    if api_version not in SUPPORTED_API_VERSIONS:
+        supported = ", ".join(str(value) for value in sorted(SUPPORTED_API_VERSIONS))
+        raise ConfigurationError(f"Unsupported project.api-version {api_version}; this Drift supports: {supported}")
     provider = project.get("provider")
     if not isinstance(provider, str) or ":" not in provider:
         raise ConfigurationError("project.provider must be 'module:callable'")
@@ -566,7 +574,7 @@ def project_load(root: Path, config: BuildConfig) -> ProjectSpec:
                 sys.modules.pop(module_name, None)
         module = importlib.import_module(module_name)
         function = getattr(module, function_name)
-        result = function(ProjectApi(root, config))
+        result = function(ProjectApi(root, config, api_version))
     except (ImportError, AttributeError, TypeError) as error:
         raise ConfigurationError(f"Cannot load provider {provider}: {error}") from error
     finally:

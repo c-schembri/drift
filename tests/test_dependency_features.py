@@ -11,6 +11,7 @@ import pytest
 
 from driftbuild.api import BuildConfig, ProjectApi
 from driftbuild.bootstrap import vcpkg_resolve
+from driftbuild.errors import ConfigurationError
 from driftbuild.importers import adapter_detect
 from driftbuild.inspection import packages_inspect
 from driftbuild.ninja import generate
@@ -18,6 +19,7 @@ from driftbuild.package_cache import package_build_root
 from driftbuild.packages import package_lock_create, packages_fetch
 from driftbuild.prebuilt import project_import as prebuilt_import
 from driftbuild.toolchain import toolchain_resolve
+from driftbuild.vcpkg import _pc_arguments, _triplet
 
 
 def _archive(path: Path, files: dict[str, str]) -> str:
@@ -25,6 +27,26 @@ def _archive(path: Path, files: dict[str, str]) -> str:
         for name, content in files.items():
             bundle.writestr(name, content)
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_vcpkg_windows_interface_uses_dynamic_crt_and_normalizes_pkg_config(tmp_path: Path) -> None:
+    api = ProjectApi(tmp_path, BuildConfig("win32"))
+    api.package("sample", source=api.vcpkg("sample", "1" * 40), linkage="static")
+    package = api.project("sample").packages[0]
+    pc = tmp_path / "sample.pc"
+    pc.write_text(
+        "includedir=C:/sdk/include\nCflags: -I\"${includedir}\" -DSAMPLE=1\nLibs: -Lx -lsample\n"
+        "Libs.private: -luser32 -pthread\n",
+        encoding="utf-8",
+    )
+
+    includes, defines, compile_arguments, link_arguments = _pc_arguments((pc,), api.config)
+
+    assert _triplet(api.config, package) == "x64-windows-static-md"
+    assert includes == (Path("C:/sdk/include").resolve(),)
+    assert defines == ("SAMPLE=1",)
+    assert compile_arguments == ()
+    assert link_arguments == ("user32.lib",)
 
 
 def test_package_declaration_normalizes_options_features_patches_and_vcpkg(tmp_path: Path) -> None:
@@ -79,6 +101,33 @@ def test_prebuilt_import_supports_header_only_and_binary_layouts(tmp_path: Path)
 
     assert dependency.compile.include_dirs == ((tmp_path / "include").resolve(),)  # type: ignore[union-attr]
     assert dependency.link.libraries == (library.resolve(),)  # type: ignore[union-attr]
+
+
+def test_prebuilt_import_selects_configuration_and_linkage(tmp_path: Path) -> None:
+    (tmp_path / "include").mkdir()
+    (tmp_path / "debug/lib").mkdir(parents=True)
+    (tmp_path / "release/lib").mkdir(parents=True)
+    debug_static = tmp_path / "debug/lib/sample.lib"
+    debug_shared = tmp_path / "debug/lib/sample.dll"
+    release_static = tmp_path / "release/lib/sample.lib"
+    for path in (debug_static, debug_shared, release_static):
+        path.write_bytes(b"library")
+    api = ProjectApi(tmp_path, BuildConfig("win32", build_type="debug"))
+    api.package("sample", source=api.git(str(tmp_path), "1" * 40), adapter="prebuilt", linkage="static")
+    package = api.project("sample").packages[0]
+
+    project = prebuilt_import(tmp_path, api.config, package)
+    dependency = project.targets[0].dependencies[0]
+
+    assert dependency.link.libraries == (debug_static.resolve(),)  # type: ignore[union-attr]
+
+    release_api = ProjectApi(tmp_path, BuildConfig("win32", build_type="release"))
+    release_api.package(
+        "sample", source=release_api.git(str(tmp_path), "1" * 40), adapter="prebuilt", linkage="shared"
+    )
+    with pytest.raises(ConfigurationError, match="no shared libraries"):
+        prebuilt_import(tmp_path, release_api.config, release_api.project("sample").packages[0])
+    assert dependency.runtime_files == ()  # type: ignore[union-attr]
 
 
 def test_patch_changes_locked_source_and_is_recorded_in_provenance(tmp_path: Path) -> None:

@@ -39,6 +39,7 @@ class BuildConfig:
     warnings: Literal["default", "all", "error"] = "default"
     unity_size: int = 0
     profile: Literal["host", "android", "ios", "emscripten", "mingw", "clang-cl"] = "host"
+    hermetic: bool = False
 
 
 @dataclass(frozen=True)

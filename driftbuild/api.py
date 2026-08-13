@@ -33,10 +33,11 @@ from driftbuild.model import (
     TestSpec,
     VcpkgSource,
 )
-from driftbuild.project import ProjectApi
+from driftbuild.project import API_VERSION, ProjectApi
 
 __all__ = [
     "ActionSpec",
+    "API_VERSION",
     "ArchiveSource",
     "Artifact",
     "ArtifactSpec",

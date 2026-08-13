@@ -1,10 +1,27 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from driftbuild.api import ActionSpec, BuildConfig, PoolSpec, ProjectApi, ProjectSpec, TargetRef
+from driftbuild.errors import ConfigurationError
 from driftbuild.model import TargetDependency, TargetSpec
 from driftbuild.ninja import generate
 from driftbuild.toolchain import Toolchain
+
+
+def test_msvc_configuration_selects_matching_dynamic_runtime(tmp_path: Path) -> None:
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    api = ProjectApi(tmp_path, BuildConfig("win32", compiler="msvc", build_type="debug"))
+    project = api.project("sample", defaults=(api.executable("app", sources=api.files("main.c")),))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    debug = generate(project, tmp_path, tmp_path / "debug", api.config, toolchain)
+    release_config = BuildConfig("win32", compiler="msvc", build_type="release")
+    release = generate(project, tmp_path, tmp_path / "release", release_config, toolchain)
+
+    assert "/MDd" in debug.compilation_database.read_text(encoding="utf-8")
+    assert "/MD " in release.compilation_database.read_text(encoding="utf-8")
 
 
 def test_generation_is_stable_and_emits_compilation_database(tmp_path: Path) -> None:
@@ -132,3 +149,85 @@ def test_external_action_orders_consumer_compilation_without_linking_stamp(tmp_p
     assert "|| " in compile_edge and stamp.name in compile_edge
     assert "|| " in link_edge and stamp.name in link_edge
     assert str(stamp) not in next(line for line in ninja.splitlines() if line.startswith("  command = g++"))
+
+
+def test_executable_stages_transitive_runtime_and_sets_loader_path(tmp_path: Path) -> None:
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    runtime = tmp_path / "libsample.so"
+    runtime.write_bytes(b"shared")
+    dependency = TargetSpec("sample", "static_library", runtime_files=(runtime,))
+    app = TargetSpec(
+        "app",
+        "executable",
+        sources=(Path("main.c"),),
+        dependencies=(TargetDependency(TargetRef("sample"), "private"),),
+    )
+    project = ProjectSpec("fixture", (dependency, app), (TargetRef("app"),))
+    config = BuildConfig("linux", compiler="gcc")
+    toolchain = Toolchain("gcc", "gcc", "g++", "g++", "ar", {}, ".o", "", "lib", ".a", "lib", ".so")
+
+    generated = generate(project, tmp_path, tmp_path / ".drift", config, toolchain)
+    ninja = generated.ninja_file.read_text(encoding="utf-8")
+
+    assert "-Wl,-rpath,$$ORIGIN" in ninja
+    assert "description = RUNTIME app" in ninja
+    assert runtime.name in ninja
+    assert "runtime/app.stamp" in ninja.replace("$:", ":").replace("\\", "/")
+
+
+def test_component_alias_propagates_each_library_interface(tmp_path: Path) -> None:
+    for name in ("first", "second"):
+        (tmp_path / f"{name}.c").write_text(f"int {name}(void) {{ return 1; }}\n", encoding="utf-8")
+        (tmp_path / name).mkdir()
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    first = TargetSpec("first", "static_library", sources=(Path("first.c"),), include_dirs=(Path("first"),))
+    second = TargetSpec("second", "static_library", sources=(Path("second.c"),), include_dirs=(Path("second"),))
+    components = TargetSpec(
+        "components",
+        "alias",
+        objects=(TargetRef("first"), TargetRef("second")),
+    )
+    app = TargetSpec(
+        "app",
+        "executable",
+        sources=(Path("main.c"),),
+        dependencies=(TargetDependency(TargetRef("components"), "private"),),
+    )
+    project = ProjectSpec("fixture", (first, second, components, app), (TargetRef("app"),))
+    config = BuildConfig("linux", compiler="gcc")
+    toolchain = Toolchain("gcc", "gcc", "g++", "g++", "ar", {}, ".o", "", "lib", ".a", "lib", ".so")
+
+    ninja = generate(project, tmp_path, tmp_path / ".drift", config, toolchain).ninja_file.read_text(encoding="utf-8")
+
+    assert f"-I{tmp_path / 'first'}" in ninja
+    assert f"-I{tmp_path / 'second'}" in ninja
+    link = next(
+        line for line in ninja.replace("\\", "/").splitlines() if line.startswith("build ") and "bin/app" in line
+    )
+    assert "libfirst.a" in link
+    assert "libsecond.a" in link
+
+
+def test_runtime_bundle_rejects_colliding_file_names(tmp_path: Path) -> None:
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    first = (tmp_path / "first")
+    second = (tmp_path / "second")
+    first.mkdir()
+    second.mkdir()
+    (first / "sample.dll").write_bytes(b"first")
+    (second / "sample.dll").write_bytes(b"second")
+    dependencies = (
+        TargetSpec("first", "static_library", runtime_files=(first / "sample.dll",)),
+        TargetSpec("second", "static_library", runtime_files=(second / "sample.dll",)),
+    )
+    app = TargetSpec(
+        "app",
+        "executable",
+        sources=(Path("main.c"),),
+        dependencies=tuple(TargetDependency(TargetRef(target.name), "private") for target in dependencies),
+    )
+    project = ProjectSpec("fixture", (*dependencies, app), (TargetRef("app"),))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    with pytest.raises(ConfigurationError, match="Runtime files collide"):
+        generate(project, tmp_path, tmp_path / ".drift", BuildConfig("win32", compiler="msvc"), toolchain)

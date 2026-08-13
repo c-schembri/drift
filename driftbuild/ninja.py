@@ -105,6 +105,12 @@ def _public_interface(
     includes = list(target.include_dirs)
     defines = list(target.defines)
     arguments = list(target.compile_arguments)
+    if target.kind == "alias":
+        for reference in target.objects:
+            child = _public_interface(targets, reference.name, visited)
+            includes.extend(child[0])
+            defines.extend(child[1])
+            arguments.extend(child[2])
     for dependency in target.dependencies:
         if isinstance(dependency, Dependency):
             includes.extend(dependency.compile.include_dirs)
@@ -140,7 +146,7 @@ def _compile_flags(
             arguments.extend(child[2])
     if toolchain.family == "msvc":
         flags = ["/D" + value for value in defines] + ["/I" + str(root / value) for value in includes]
-        flags += ["/Od", "/Z7"] if config.build_type == "debug" else ["/O2", "/DNDEBUG"]
+        flags += ["/Od", "/Z7", "/MDd", "/D_DEBUG"] if config.build_type == "debug" else ["/O2", "/MD", "/DNDEBUG"]
         if config.warnings != "default":
             flags.append("/W4")
         if config.warnings == "error":
@@ -231,6 +237,47 @@ def _dependency_action_outputs(
     return list(dict.fromkeys(result))
 
 
+def _runtime_files(
+    target: TargetSpec,
+    targets: Mapping[str, TargetSpec],
+    outputs: Mapping[str, tuple[Path, ...]],
+    root: Path,
+) -> list[Path]:
+    result = [_source_path(root, value, outputs) for value in target.runtime_files]
+    visited: set[str] = set()
+
+    def add_target(name: str) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        dependency = targets[name]
+        result.extend(_source_path(root, value, outputs) for value in dependency.runtime_files)
+        if dependency.kind == "shared_library":
+            result.extend(path for path in outputs[name] if path.suffix.casefold() != ".lib")
+        if dependency.kind == "alias":
+            for reference in dependency.objects:
+                add_target(reference.name)
+        for nested in dependency.dependencies:
+            if isinstance(nested, Dependency):
+                result.extend(path if path.is_absolute() else root / path for path in nested.runtime_files)
+            else:
+                add_target(_dependency_target_name(nested))
+
+    for dependency in target.dependencies:
+        if isinstance(dependency, Dependency):
+            result.extend(path if path.is_absolute() else root / path for path in dependency.runtime_files)
+        else:
+            add_target(_dependency_target_name(dependency))
+    resolved = list(dict.fromkeys(path.resolve() for path in result if path.is_file() or path.is_absolute()))
+    names: dict[str, Path] = {}
+    for path in resolved:
+        existing = names.get(path.name.casefold())
+        if existing is not None and existing != path:
+            raise ConfigurationError(f"Runtime files collide at {path.name}: {existing} and {path}")
+        names[path.name.casefold()] = path
+    return resolved
+
+
 def _link_inputs(
     target: TargetSpec,
     targets: Mapping[str, TargetSpec],
@@ -266,6 +313,9 @@ def _link_inputs(
                 paths.extend(libraries)
             else:
                 paths.extend(candidates)
+        if child.kind == "alias":
+            for reference in child.objects:
+                add_target(reference.name)
         for nested in child.dependencies:
             if isinstance(nested, Dependency):
                 arguments.extend(library_argument(value) for value in nested.link.libraries)
@@ -357,6 +407,7 @@ def generate(
     compdb: list[dict[str, str]] = []
     object_outputs: dict[str, list[Path]] = {}
     output_phases: dict[Path, str] = {}
+    phony_outputs: dict[str, list[Path]] = {}
     action_root = build_root / "actions"
 
     for target in project.targets:
@@ -596,6 +647,13 @@ def generate(
             ]
             if target.kind == "shared_library":
                 arguments.append("-shared")
+            elif (
+                target.kind == "executable"
+                and config.platform in ("linux", "darwin")
+                and _runtime_files(target, targets, outputs, root)
+            ):
+                loader_path = "@loader_path" if config.platform == "darwin" else "$ORIGIN"
+                arguments.append(f"-Wl,-rpath,{loader_path}")
             rule = "link"
         output_phases.update((path, rule) for path in outputs[target.name])
         command_variable = "tool_command" if toolchain.family == "msvc" else "command"
@@ -613,13 +671,36 @@ def generate(
             ]
         lines.append("")
 
+        if target.kind == "executable":
+            runtime_files = _runtime_files(target, targets, outputs, root)
+            if runtime_files:
+                stamp = build_root / "runtime" / f"{target.name}.stamp"
+                payload = {
+                    "files": [str(path) for path in runtime_files],
+                    "destination": str(output.parent),
+                    "stamp": str(stamp),
+                }
+                spec_path = action_root / f"{target.name}-runtime.json"
+                _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
+                lines += [
+                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path in runtime_files)} | {_ninja(output)}",
+                    f"  command = {runner}",
+                    f"  description = RUNTIME {target.name}",
+                    "  restat = 1",
+                    "",
+                ]
+                phony_outputs[target.name] = [stamp]
+                output_phases[stamp] = "action"
+
     for target in project.targets:
         target_outputs = outputs[target.name]
         if target.kind == "alias":
             dependencies = [path for reference in target.objects for path in outputs[reference.name]]
             lines += [f"build {target.name}: phony {' '.join(_ninja(path) for path in dependencies)}", ""]
         elif target_outputs:
-            lines += [f"build {target.name}: phony {' '.join(_ninja(path) for path in target_outputs)}", ""]
+            phony = (*target_outputs, *phony_outputs.get(target.name, ()))
+            lines += [f"build {target.name}: phony {' '.join(_ninja(path) for path in phony)}", ""]
     defaults = [reference.name for reference in project.defaults]
     if defaults:
         transitive_targets(targets, defaults)

@@ -171,6 +171,35 @@ def _strings(value: object) -> tuple[str, ...]:
     return tuple(item for item in value if isinstance(item, str)) if isinstance(value, list) else ()
 
 
+def _component_order(cpp_info: dict[str, Any]) -> tuple[str, ...]:
+    """Order Conan components so static dependents precede their requirements."""
+    names = tuple(name for name, value in cpp_info.items() if isinstance(value, dict))
+    local = set(names)
+    requirements = {
+        name: tuple(
+            requirement.rsplit("::", 1)[-1]
+            for requirement in _strings(cast(dict[str, Any], cpp_info[name]).get("requires"))
+            if requirement.rsplit("::", 1)[-1] in local
+        )
+        for name in names
+    }
+    incoming = {name: 0 for name in names}
+    for values in requirements.values():
+        for requirement in values:
+            incoming[requirement] += 1
+    ready = [name for name in names if incoming[name] == 0]
+    ordered: list[str] = []
+    while ready:
+        name = ready.pop(0)
+        ordered.append(name)
+        for requirement in requirements[name]:
+            incoming[requirement] -= 1
+            if incoming[requirement] == 0:
+                ready.append(requirement)
+    ordered.extend(name for name in names if name not in ordered)
+    return tuple(ordered)
+
+
 def _deploy(node: dict[str, Any], deploy_root: Path) -> None:
     package_folder = node.get("package_folder")
     if not isinstance(package_folder, str) or not Path(package_folder).is_dir():
@@ -207,9 +236,8 @@ def _interface(
     compile_arguments: list[str] = []
     link_arguments: list[str] = []
     library_names: list[str] = []
-    for component in cpp_info.values():
-        if not isinstance(component, dict):
-            continue
+    for component_name in _component_order(cast(dict[str, Any], cpp_info)):
+        component = cast(dict[str, Any], cpp_info[component_name])
         include_dirs.extend(package_path(value) for value in _strings(component.get("includedirs")))
         library_dirs.extend(package_path(value) for value in _strings(component.get("libdirs")))
         runtime_dirs.extend(package_path(value) for value in _strings(component.get("bindirs")))

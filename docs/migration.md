@@ -1,6 +1,19 @@
 # Migration from project scripts
 
-Drift is motivated by Castalia's project tooling, but its first milestone is intentionally standalone. Nothing in this repository imports Castalia, modifies its checkout, or assumes its source layout.
+Drift is motivated by Castalia's project tooling, but remains intentionally standalone. Nothing in this repository
+imports Castalia, modifies its checkout, or assumes its source layout.
+
+## Provider API v1
+
+New manifests use `api-version = 1`. Existing v0 providers can migrate by changing only the manifest version; v1 keeps
+the v0 declarations and adds the stability contract, package component/linkage selection, and `api.api_version` for
+rare version-aware compatibility code. Providers should ordinarily remain version-independent.
+
+```toml
+[project]
+api-version = 1
+provider = "build:project"
+```
 
 Move one concept at a time from imperative orchestration to declarations. A typical script starts by collecting sources and spelling compiler commands itself:
 
@@ -26,4 +39,5 @@ runtime = api.runtime_bundle("runtime", api.files("assets/default.json"), destin
 return api.project("app", defaults=(app, runtime))
 ```
 
-Before adopting Drift in another repository, reproduce that repository's current target inventory as a Drift fixture, compare outputs and command lines, and measure clean, incremental, and no-op builds. Integration launchers or CI changes belong to a later migration project, not Drift 0.1.
+Before adopting Drift in another repository, reproduce that repository's current target inventory as a Drift fixture,
+compare outputs and command lines, and measure clean, incremental, and no-op builds.

@@ -15,6 +15,31 @@ from pathlib import Path
 from driftbuild.errors import ConfigurationError
 from driftbuild.model import BuildConfig
 
+_AMBIENT_BUILD_VARIABLES = frozenset(
+    {
+        "ARFLAGS",
+        "CFLAGS",
+        "CPPFLAGS",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "LIBRARY_PATH",
+        "CPATH",
+        "C_INCLUDE_PATH",
+        "CPLUS_INCLUDE_PATH",
+        "PKG_CONFIG_PATH",
+        "PKG_CONFIG_LIBDIR",
+    }
+)
+
+
+def _environment(config: BuildConfig, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    environment = dict(os.environ if base is None else base)
+    if config.hermetic:
+        for name in _AMBIENT_BUILD_VARIABLES:
+            environment.pop(name, None)
+        environment.update({"SOURCE_DATE_EPOCH": "0", "TZ": "UTC", "LC_ALL": "C"})
+    return environment
+
 _VC_ENVIRONMENT_NAMES = frozenset({"PATH", "INCLUDE", "LIB", "LIBPATH"})
 _VC_ENVIRONMENT_PREFIXES = (
     "COMMANDPROMPTTYPE",
@@ -153,7 +178,7 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
             required = ("family", "cc", "cxx", "linker", "archiver")
             if not isinstance(payload, dict) or any(not isinstance(payload.get(name), str) for name in required):
                 raise ValueError(f"required string fields are: {', '.join(required)}")
-            environment = dict(os.environ)
+            environment = _environment(config)
             raw_environment = payload.get("environment", {})
             if not isinstance(raw_environment, dict) or any(
                 not isinstance(name, str) or not isinstance(value, str) for name, value in raw_environment.items()
@@ -188,7 +213,7 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
         missing = [tool for tool in ("emcc", "em++", "emar") if shutil.which(tool) is None]
         if missing:
             raise ConfigurationError("Emscripten profile requires an activated emsdk; missing: " + ", ".join(missing))
-        return Toolchain("emscripten", "emcc", "em++", "em++", "emar", dict(os.environ), ".o", ".js", "lib", ".a", "lib", ".wasm")
+        return Toolchain("emscripten", "emcc", "em++", "em++", "emar", _environment(config), ".o", ".js", "lib", ".a", "lib", ".wasm")
     if config.profile == "android":
         ndk_value = os.environ.get("ANDROID_NDK_ROOT") or os.environ.get("ANDROID_NDK_HOME")
         if ndk_value is None:
@@ -203,7 +228,7 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
         android_ar = bin_root / ("llvm-ar.exe" if os.name == "nt" else "llvm-ar")
         if not all(path.is_file() for path in (android_cc, android_cxx, android_ar)):
             raise ConfigurationError(f"Android NDK toolchain is incomplete under {bin_root}")
-        return Toolchain("clang", str(android_cc), str(android_cxx), str(android_cxx), str(android_ar), dict(os.environ), ".o", "", "lib", ".a", "lib", ".so")
+        return Toolchain("clang", str(android_cc), str(android_cxx), str(android_cxx), str(android_ar), _environment(config), ".o", "", "lib", ".a", "lib", ".so")
     if config.profile == "ios":
         if platform.system() != "Darwin":
             raise ConfigurationError("iOS profile requires a macOS host with Xcode")
@@ -213,7 +238,7 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
             if result.returncode != 0:
                 raise ConfigurationError(f"iOS profile could not locate {name} through xcrun")
             tools[name] = result.stdout.strip()
-        environment = dict(os.environ)
+        environment = _environment(config)
         sdk = subprocess.run(("xcrun", "--sdk", "iphoneos", "--show-sdk-path"), capture_output=True, text=True)
         if sdk.returncode == 0:
             environment["SDKROOT"] = sdk.stdout.strip()
@@ -224,11 +249,12 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
         missing = [tool for tool in (mingw_cc, mingw_cxx, mingw_ar) if shutil.which(tool) is None]
         if missing:
             raise ConfigurationError("MinGW profile is incomplete; missing: " + ", ".join(missing))
-        return Toolchain("gcc", mingw_cc, mingw_cxx, mingw_cxx, mingw_ar, dict(os.environ), ".o", ".exe", "lib", ".a", "", ".dll")
+        return Toolchain("gcc", mingw_cc, mingw_cxx, mingw_cxx, mingw_ar, _environment(config), ".o", ".exe", "lib", ".a", "", ".dll")
     if family in ("msvc", "clang-cl"):
         if os.name != "nt":
             raise ConfigurationError(f"{family} is only supported on Windows")
         environment = _vc_environment(config.architecture, state_root)
+        environment = _environment(config, environment)
         if family == "clang-cl":
             missing = [tool for tool in ("clang-cl", "lld-link", "llvm-lib") if shutil.which(tool, path=environment.get("PATH")) is None]
             if missing:
@@ -250,7 +276,7 @@ def toolchain_resolve(config: BuildConfig, state_root: Path | None = None) -> To
         cxx,
         cxx,
         "ar",
-        dict(os.environ),
+        _environment(config),
         ".o",
         executable_suffix,
         "lib",

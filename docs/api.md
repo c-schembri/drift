@@ -1,4 +1,4 @@
-# Provider API v0
+# Provider API v1
 
 Import the supported surface from `driftbuild.api`. Construct declarations through the supplied `ProjectApi`; do not instantiate internal backend classes.
 
@@ -49,4 +49,7 @@ need it. Drift reads the selected project and its `ProjectReference` closure but
 - `RemoteSpec` configures explicit SSH execution and copy operations.
 - `CommandSpec` and `OptionSpec` expose typed provider commands. Handlers receive `CommandContext` and may be synchronous or asynchronous.
 
-The v0 API is experimental. Breaking changes remain possible until API version 1.
+API v1 is the stable provider contract. Drift continues to load API v0 manifests for migration, but new declarations
+should use `api-version = 1`. Additive fields and new declaration types may be introduced within v1; existing names,
+defaults, and semantics will not be changed incompatibly. A future incompatible API will require an explicit manifest
+version and will not silently reinterpret an older provider.

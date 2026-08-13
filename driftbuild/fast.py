@@ -16,6 +16,7 @@ from driftbuild.model import BuildConfig
 
 _OPERATIONS = {
     "artifact",
+    "audit",
     "benchmark",
     "build",
     "cache",
@@ -32,6 +33,7 @@ _OPERATIONS = {
     "release",
     "remote",
     "run",
+    "self-update",
     "task",
     "targets",
     "test",
@@ -106,7 +108,7 @@ def _operation_find(arguments: list[str]) -> tuple[str, int] | None:
         ):
             index += 1
             continue
-        if argument in ("-v", "--offline"):
+        if argument in ("-v", "--offline", "--hermetic"):
             index += 1
             continue
         return None
@@ -158,6 +160,7 @@ def _no_op(arguments: list[str]) -> bool:
         target=target,
         sysroot=Path(sysroot).resolve() if sysroot else None,
         toolchain_file=Path(toolchain).resolve() if toolchain else None,
+        hermetic="--hermetic" in arguments[:operation],
     )
     key = config_key(config)
     build_root = root / ".drift" / "build" / key

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from driftbuild.api import BuildConfig, ProjectApi
+from driftbuild.api import API_VERSION, BuildConfig, ProjectApi
 from driftbuild.errors import ConfigurationError
 
 
@@ -35,3 +35,10 @@ def test_public_and_private_dependencies_are_explicit(tmp_path: Path) -> None:
 
     assert project.targets[1].dependencies[0].visibility == "private"  # type: ignore[union-attr]
     assert api.output(application).path == Path("application")
+
+
+def test_project_api_exposes_stable_version(tmp_path: Path) -> None:
+    api = api_for(tmp_path)
+
+    assert API_VERSION == 1
+    assert api.api_version == 1

@@ -8,7 +8,7 @@ from driftbuild.cache import cache_export, cache_import, cache_pull, cache_push
 from driftbuild.distribution import standalone_create
 from driftbuild.install import project_install
 from driftbuild.ninja import generate
-from driftbuild.toolchain import Toolchain
+from driftbuild.toolchain import Toolchain, toolchain_resolve
 from driftbuild.vscode import generate as vscode_generate
 from driftbuild.xcode import generate as xcode_generate
 
@@ -110,3 +110,15 @@ def test_standalone_zipapp_runs_without_installation(tmp_path: Path) -> None:
 
     assert completed.returncode == 0
     assert completed.stdout.startswith("drift ")
+
+
+def test_hermetic_toolchain_removes_ambient_build_flags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("CFLAGS", "-DHOST_LEAK=1")
+    monkeypatch.setenv("PKG_CONFIG_PATH", str(tmp_path))
+    monkeypatch.setattr("driftbuild.toolchain.shutil.which", lambda value, **_kwargs: value)
+
+    toolchain = toolchain_resolve(BuildConfig("linux", compiler="gcc", hermetic=True))
+
+    assert "CFLAGS" not in toolchain.environment
+    assert "PKG_CONFIG_PATH" not in toolchain.environment
+    assert toolchain.environment["SOURCE_DATE_EPOCH"] == "0"

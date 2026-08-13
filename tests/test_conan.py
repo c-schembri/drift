@@ -4,7 +4,16 @@ from pathlib import Path
 
 from driftbuild.api import BuildConfig
 from driftbuild.bootstrap import conan_resolve, meson_resolve, ninja_resolve
-from driftbuild.conan import project_import
+from driftbuild.conan import _component_order, project_import
+
+
+def test_conan_components_link_dependents_before_static_requirements() -> None:
+    cpp_info = {
+        "base": {"libs": ["base"], "requires": []},
+        "main": {"libs": ["main"], "requires": ["base"]},
+    }
+
+    assert _component_order(cpp_info) == ("main", "base")
 
 
 def test_conan_recipe_imports_packaged_interface(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

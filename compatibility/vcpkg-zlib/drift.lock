@@ -1,0 +1,32 @@
+{
+  "packages": [
+    {
+      "content_sha256": "d265be591345047d5fa9257b8fa418eb217547dc958b2cf1498f4e629bf2c535",
+      "name": "zlib",
+      "overlay": null,
+      "provenance": {
+        "adapter_versions": {
+          "vcpkg": "host"
+        },
+        "adapters": [
+          "vcpkg"
+        ],
+        "components": [],
+        "features": [],
+        "linkage": "auto",
+        "options": {},
+        "patches": []
+      },
+      "request_sha256": "e70687fa30690a8b91d930e7ebf811599fd6791f59f3cc8cef11f409025d94e0",
+      "scope": "",
+      "source": {
+        "baseline": "2273a28f34ce5aac8be50b3b6b44da7fc1722e06",
+        "features": [],
+        "kind": "vcpkg",
+        "port": "zlib",
+        "registry": "https://github.com/microsoft/vcpkg"
+      }
+    }
+  ],
+  "version": 4
+}

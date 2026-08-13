@@ -104,7 +104,10 @@ This interface reflects the host and is intentionally not recorded as a source p
 
 Use `components=("upstream-target",)` when a package's default should be one named upstream component. Use
 `package.target("upstream-target")` or `package.component("upstream-target")` when different consumers need different
-exports from the same package. `linkage="static"` and `linkage="shared"` map to the native CMake and Meson selection
+exports from the same package. Multiple requested components form one aggregate interface, including each component's
+transitive headers, definitions, libraries, system link arguments, and runtime files. Shared runtime libraries are copied
+beside consuming executables and Unix executables receive an origin-relative loader path. `linkage="static"` and
+`linkage="shared"` map to the native CMake, Meson, vcpkg, and prebuilt selection
 without leaking their option names. `build=api.msbuild(...)` remains an escape hatch for ambiguous Visual C++ trees;
 it is not expected in ordinary package declarations.
 
@@ -128,11 +131,15 @@ def project(api):
 drift lock
 drift fetch
 drift --offline build
+drift audit
 ```
 
 Commit `drift.lock`. A normal build may download content already identified by that lock, but it never changes the lock
 or resolves another revision. `--offline` rejects missing network content. `drift fetch` also rehashes cached source trees
 and reports local corruption.
+
+For protected environments, sign `drift.lock` with `drift lock --sign KEY` and verify it before fetching with
+`drift lock --check --verify-signature allowed_signers --signer build@example.com`.
 
 Packages containing a Drift project may declare their own packages. Drift records every dependency under a scoped lock
 identity, composes it beneath a collision-resistant target namespace, and rejects source cycles before invoking Ninja.

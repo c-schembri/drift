@@ -27,19 +27,22 @@ from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
 from driftbuild.runtime import module_command
 from driftbuild.storage import drift_home
+from driftbuild.toolchain import toolchain_resolve
 
 
-def _triplet(config: BuildConfig, options: dict[str, str]) -> str:
+def _triplet(config: BuildConfig, package: PackageSpec) -> str:
     architecture = {"x86_64": "x64", "x86": "x86", "arm64": "arm64"}.get(config.architecture)
     if architecture is None:
         raise ConfigurationError(f"vcpkg does not support Drift architecture {config.architecture}")
     system = "windows" if config.platform == "win32" else "osx" if config.platform == "darwin" else "linux"
-    suffix = "-static" if system == "windows" and options.get("shared", "false") == "false" else ""
+    options = dict(package.options)
+    shared = package.linkage == "shared" or options.get("shared", "false") == "true"
+    suffix = "-static-md" if system == "windows" and not shared else ""
     return f"{architecture}-{system}{suffix}"
 
 
-def _environment(build_root: Path) -> dict[str, str]:
-    environment = dict(os.environ)
+def _environment(build_root: Path, state_root: Path, config: BuildConfig) -> dict[str, str]:
+    environment = dict(toolchain_resolve(config, state_root.parent).environment)
     binary_cache = drift_home() / "vcpkg" / "archives"
     downloads = drift_home() / "vcpkg" / "downloads"
     binary_cache.mkdir(parents=True, exist_ok=True)
@@ -129,6 +132,7 @@ def _owned_files(installed: Path, port: str, build_type: str) -> tuple[tuple[Pat
         return libraries, tuple(dict.fromkeys(runtime)), ()
     debug_prefix = ("debug",) if build_type == "debug" else ()
     library_roots = {debug_prefix + ("lib",), debug_prefix + ("lib64",)}
+    binary_roots = {debug_prefix + ("bin",)}
     libraries = tuple(
         path
         for path in paths
@@ -138,9 +142,19 @@ def _owned_files(installed: Path, port: str, build_type: str) -> tuple[tuple[Pat
     runtime = tuple(
         path
         for path in paths
-        if path.suffix.casefold() in (".dll", ".dylib") or ".so." in path.name
+        if any(
+            path.relative_to(installed).parts[: len(prefix)] == prefix
+            for prefix in (*library_roots, *binary_roots)
+        )
+        and (path.suffix.casefold() in (".dll", ".dylib") or ".so." in path.name)
     )
-    pc_files = tuple(path for path in paths if path.suffix.casefold() == ".pc")
+    pc_root = debug_prefix + ("lib", "pkgconfig")
+    pc_files = tuple(
+        path
+        for path in paths
+        if path.suffix.casefold() == ".pc"
+        and path.relative_to(installed).parts[: len(pc_root)] == pc_root
+    )
     return libraries, runtime, pc_files
 
 
@@ -155,7 +169,11 @@ def _pc_expand(value: str, variables: dict[str, str]) -> str:
     return value
 
 
-def _pc_arguments(files: tuple[Path, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _pc_arguments(
+    files: tuple[Path, ...], config: BuildConfig
+) -> tuple[tuple[Path, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    include_dirs: list[Path] = []
+    defines: list[str] = []
     compile_arguments: list[str] = []
     link_arguments: list[str] = []
     for path in files:
@@ -168,14 +186,33 @@ def _pc_arguments(files: tuple[Path, ...]) -> tuple[tuple[str, ...], tuple[str, 
             elif ":" in line:
                 name, value = line.split(":", 1)
                 fields[name.strip()] = value.strip()
-        compile_arguments.extend(shlex.split(_pc_expand(fields.get("Cflags", ""), variables), posix=os.name != "nt"))
-        link_arguments.extend(
-            shlex.split(
-                _pc_expand(" ".join((fields.get("Libs", ""), fields.get("Libs.private", ""))), variables),
-                posix=os.name != "nt",
-            )
+        cflags = shlex.split(_pc_expand(fields.get("Cflags", ""), variables), posix=os.name != "nt")
+        for value in cflags:
+            value = value.replace('"', "")
+            if value.startswith("-I"):
+                include_dirs.append(Path(value[2:]).resolve())
+            elif value.startswith("-D"):
+                defines.append(value[2:])
+            elif config.platform != "win32" or not value.startswith("-"):
+                compile_arguments.append(value)
+        link_fields = fields.get("Libs.private", "") if config.platform == "win32" else " ".join(
+            (fields.get("Libs", ""), fields.get("Libs.private", ""))
         )
-    return tuple(dict.fromkeys(compile_arguments)), tuple(dict.fromkeys(link_arguments))
+        for value in shlex.split(_pc_expand(link_fields, variables), posix=os.name != "nt"):
+            value = value.replace('"', "")
+            if config.platform == "win32":
+                if value.startswith("-l"):
+                    link_arguments.append(value[2:] + ".lib")
+                elif not value.startswith(("-L", "-Wl,", "-pthread")):
+                    link_arguments.append(value)
+            else:
+                link_arguments.append(value)
+    return (
+        tuple(dict.fromkeys(include_dirs)),
+        tuple(dict.fromkeys(defines)),
+        tuple(dict.fromkeys(compile_arguments)),
+        tuple(dict.fromkeys(link_arguments)),
+    )
 
 
 def project_import(
@@ -192,12 +229,12 @@ def project_import(
     build_root = package_build_root(source_root, package, config, "vcpkg")
     source = package.source
     features = tuple(dict.fromkeys((*source.features, *package.features)))
-    triplet = _triplet(config, dict(package.options))
+    triplet = _triplet(config, package)
     install_root = build_root / "installed"
     installed = install_root / triplet
     stamp = installed / ".drift-installed"
     executable = vcpkg_resolve(state_root.parent)
-    environment = _environment(build_root)
+    environment = _environment(build_root, state_root, config)
     with cache_lock(build_root.with_suffix(".lock")):
         manifest_root = _manifest_write(build_root, source, features)
         if not stamp.is_file():
@@ -207,12 +244,12 @@ def project_import(
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.touch()
     libraries, runtime_files, pc_files = _owned_files(installed, source.port, config.build_type)
-    pc_compile, pc_link = _pc_arguments(pc_files)
+    pc_includes, pc_defines, pc_compile, pc_link = _pc_arguments(pc_files, config)
     include = installed / "include"
     dependency = Dependency(
         package.name,
-        CompileInterface((include,), arguments=pc_compile),
-        LinkInterface(libraries, arguments=pc_link),
+        CompileInterface((include, *pc_includes), pc_defines, pc_compile),
+        LinkInterface(arguments=pc_link),
         runtime_files,
     )
     action = ActionSpec(

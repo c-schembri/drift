@@ -317,4 +317,12 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
     if not result:
         raise ConfigurationError(f"Meson package {package_name} exposes no buildable native targets")
     selected = _default_target(package, result)
+    if isinstance(package, PackageSpec) and len(package.components) > 1:
+        available = {target.name.casefold(): target.name for target in result}
+        alias = TargetSpec(
+            "__drift_components",
+            "alias",
+            objects=tuple(TargetRef(available[name.casefold()]) for name in package.components),
+        )
+        return ProjectSpec(package_name, (*result, alias), (TargetRef(alias.name),))
     return ProjectSpec(package_name, result, (selected,) if selected is not None else ())

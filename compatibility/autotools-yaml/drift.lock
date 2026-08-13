@@ -1,0 +1,31 @@
+{
+  "packages": [
+    {
+      "content_sha256": "60bd7241c851d6b0123da153b2d7b68454980a71966a7b8520cc8f67ec302436",
+      "name": "yaml",
+      "overlay": null,
+      "provenance": {
+        "adapter_versions": {
+          "autotools": "host"
+        },
+        "adapters": [
+          "autotools"
+        ],
+        "components": [],
+        "features": [],
+        "linkage": "auto",
+        "options": {},
+        "patches": []
+      },
+      "request_sha256": "38caf43d7a1ba313f76613d9bfa109d226a2644bee4ca99bee15e1dec15f497e",
+      "scope": "",
+      "source": {
+        "kind": "archive",
+        "sha256": "c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4",
+        "strip_prefix": "yaml-0.2.5",
+        "url": "https://pyyaml.org/download/libyaml/yaml-0.2.5.tar.gz"
+      }
+    }
+  ],
+  "version": 4
+}

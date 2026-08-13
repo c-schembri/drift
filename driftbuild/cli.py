@@ -34,6 +34,7 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         return arguments
     operations = {
         "artifact",
+        "audit",
         "benchmark",
         "build",
         "cache",
@@ -49,6 +50,7 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "outdated",
         "perf",
         "run",
+        "self-update",
         "task",
         "targets",
         "test",
@@ -152,6 +154,7 @@ def _configuration(arguments: argparse.Namespace, root: Path) -> BuildConfig:
         arguments.warnings,
         arguments.unity or 0,
         profile,
+        arguments.hermetic,
     )
 
 
@@ -183,6 +186,7 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--unity", type=int, metavar="FILES", help="combine source files in groups of this size")
     parser.add_argument("-D", "--define", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--offline", action="store_true", help="forbid package network access")
+    parser.add_argument("--hermetic", action="store_true", help="remove ambient compiler and package flags")
     parser.add_argument("-v", "--verbose", action="store_true")
     commands = parser.add_subparsers(dest="operation", required=True)
 
@@ -238,6 +242,9 @@ def _base_parser() -> argparse.ArgumentParser:
     lock_parser.add_argument("--check", action="store_true", help="fail if drift.lock would change")
     lock_parser.add_argument("--diff", action="store_true", help="print lock changes")
     lock_parser.add_argument("--refresh", action="store_true", help="rematerialize exact declared sources")
+    lock_parser.add_argument("--sign", type=Path, metavar="KEY", help="sign drift.lock with an SSH key")
+    lock_parser.add_argument("--verify-signature", type=Path, metavar="SIGNERS", help="verify drift.lock.sig")
+    lock_parser.add_argument("--signer", help="identity in the SSH allowed-signers file")
     lock_parser.set_defaults(handler=_lock)
     outdated_parser = commands.add_parser("outdated", help="report whether package declarations changed since lock")
     outdated_parser.set_defaults(handler=_outdated)
@@ -277,13 +284,18 @@ def _base_parser() -> argparse.ArgumentParser:
     perf_parser.add_argument("--repetitions", type=int, default=5)
     perf_parser.add_argument("--output", type=Path)
     perf_parser.add_argument("--json", action="store_true")
+    perf_parser.add_argument("--budget", type=Path, help="fail when medians exceed a JSON budget")
     perf_parser.set_defaults(handler=_performance)
     artifact_parser = commands.add_parser("artifact", help="build and create reproducible artifacts")
     artifact_parser.add_argument("names", nargs="*")
     artifact_parser.set_defaults(handler=_artifact)
+    audit_parser = commands.add_parser("audit", help="create a CycloneDX SBOM and third-party license report")
+    audit_parser.add_argument("--output", type=Path)
+    audit_parser.set_defaults(handler=_audit)
     release_parser = commands.add_parser("release", help="validate or publish a declared release")
     release_parser.add_argument("name")
     release_parser.add_argument("--publish", action="store_true")
+    release_parser.add_argument("--sign", type=Path, metavar="KEY", help="sign the release checksum manifest")
     release_parser.set_defaults(handler=_release)
     remote_parser = commands.add_parser("remote", help="execute an explicit command on a declared remote")
     remote_parser.add_argument("name")
@@ -307,6 +319,12 @@ def _base_parser() -> argparse.ArgumentParser:
     standalone_parser = commands.add_parser("standalone", help="create a portable Drift zipapp")
     standalone_parser.add_argument("--output", type=Path, default=Path("drift.pyz"))
     standalone_parser.set_defaults(handler=_standalone)
+    update_parser = commands.add_parser("self-update", help="install a verified native Drift release")
+    update_parser.add_argument("--version", help="release version without the leading v")
+    update_parser.add_argument("--repository", default="c-schembri/drift")
+    update_parser.add_argument("--allowed-signers", type=Path, help="verify SHA256SUMS.sig with this SSH signer file")
+    update_parser.add_argument("--signer", help="identity in the SSH allowed-signers file")
+    update_parser.set_defaults(handler=_self_update)
     return parser
 
 
@@ -347,14 +365,24 @@ def _clean(arguments: argparse.Namespace, project: ProjectSpec, root: Path, conf
 
 def _lock(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
     from driftbuild.packages import package_lock_create, package_lock_diff, package_lock_read
+    from driftbuild.supply_chain import signature_create, signature_verify
 
-    previous = package_lock_read(root) if (root / "drift.lock").is_file() else None
+    lock_path = root / "drift.lock"
+    if arguments.verify_signature is not None:
+        if not arguments.signer:
+            raise ExecutionError("--verify-signature requires --signer")
+        if not arguments.check and arguments.sign is None:
+            raise ExecutionError("--verify-signature requires --check or a replacement --sign key")
+        signature_verify(lock_path, arguments.verify_signature.resolve(), arguments.signer)
+    previous = package_lock_read(root) if lock_path.is_file() else None
     result = package_lock_create(project, root, refresh=arguments.refresh, write=not arguments.check)
     changes = package_lock_diff(previous, result)
     if arguments.diff or arguments.check:
         print("\n".join(changes) if changes else "drift.lock is current")
     if arguments.check:
         return 1 if changes else 0
+    if arguments.sign is not None:
+        signature_create(lock_path, arguments.sign.resolve())
     print(f"Locked {len(result.packages)} package(s) in {root / 'drift.lock'}")
     return 0
 
@@ -597,9 +625,11 @@ def _benchmark(arguments: argparse.Namespace, project: ProjectSpec, root: Path, 
 
 
 def _performance(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
-    from driftbuild.performance import performance_run
+    from driftbuild.performance import performance_budget_check, performance_run
 
     payload = performance_run(project, root, root / ".drift", config, arguments.repetitions, arguments.output)
+    if arguments.budget is not None:
+        performance_budget_check(payload, arguments.budget.resolve())
     if arguments.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
@@ -632,6 +662,15 @@ def _artifact(arguments: argparse.Namespace, project: ProjectSpec, root: Path, c
     return 0
 
 
+def _audit(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.supply_chain import audit_create
+
+    output = arguments.output.resolve() if arguments.output is not None else root / ".drift" / "audit"
+    for path in audit_create(project, root, output):
+        print(path)
+    return 0
+
+
 def _release(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
     from driftbuild.artifact import artifacts_create
     from driftbuild.build import build
@@ -644,7 +683,29 @@ def _release(arguments: argparse.Namespace, project: ProjectSpec, root: Path, co
     targets = _artifact_targets(project, namespace.names)
     result = build(project, root, root / ".drift", config, targets)
     paths = artifacts_create(project, root, root / ".drift", result.generated.outputs, namespace.names)
-    print(release_publish(project, root, paths, arguments.name, publish=arguments.publish))
+    print(
+        release_publish(
+            project,
+            root,
+            paths,
+            arguments.name,
+            publish=arguments.publish,
+            sign_key=arguments.sign.resolve() if arguments.sign is not None else None,
+        )
+    )
+    return 0
+
+
+def _self_update(arguments: argparse.Namespace, _project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
+    from driftbuild.self_update import self_update
+
+    version, shim = self_update(
+        arguments.repository,
+        arguments.version,
+        arguments.allowed_signers.resolve() if arguments.allowed_signers is not None else None,
+        arguments.signer,
+    )
+    print(f"Installed Drift {version}: {shim}")
     return 0
 
 
@@ -713,7 +774,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         raw_arguments = list(sys.argv[1:] if argv is None else argv)
         arguments = parser.parse_args(_project_directory_normalize(raw_arguments))
-        projectless = arguments.operation in ("cache", "standalone")
+        projectless = arguments.operation in ("cache", "self-update", "standalone")
         root = (
             (Path(arguments.root).resolve() if arguments.root else Path.cwd().resolve())
             if projectless
@@ -730,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
             "doctor",
             "cache",
             "standalone",
+            "self-update",
         ):
             from driftbuild.packages import packages_compose
 

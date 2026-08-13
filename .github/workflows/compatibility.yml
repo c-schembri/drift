@@ -36,6 +36,12 @@ jobs:
           - os: ubuntu-latest
             project: examples/inih
             run: inih-example
+          - os: ubuntu-latest
+            project: compatibility/autotools-yaml
+            run: autotools-yaml-smoke
+          - os: ubuntu-latest
+            project: compatibility/pkg-config-zlib
+            run: pkg-config-zlib-smoke
           - os: windows-latest
             project: examples/sdl3-window
             run: ""
@@ -52,3 +58,20 @@ jobs:
       - name: Run compatibility case
         if: matrix.run != ''
         run: uv run drift run ${{ matrix.project }} ${{ matrix.run }}
+
+  extended:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [compatibility/vcpkg-zlib, compatibility/conan-catch2]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run drift build ${{ matrix.project }}
+      - run: uv run drift run ${{ matrix.project }}

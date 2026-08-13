@@ -12,7 +12,13 @@ from driftbuild.process import run
 
 
 def release_publish(
-    project: ProjectSpec, root: Path, artifact_paths: Sequence[Path], name: str, *, publish: bool = False
+    project: ProjectSpec,
+    root: Path,
+    artifact_paths: Sequence[Path],
+    name: str,
+    *,
+    publish: bool = False,
+    sign_key: Path | None = None,
 ) -> str:
     """Validate clean git state and publish a declared release when requested."""
     release = next((item for item in project.releases if item.name == name), None)
@@ -22,8 +28,14 @@ def release_publish(
     if status.stdout.strip():
         raise ExecutionError("Release requires a clean git worktree")
     tag = release.tag or f"v{release.version}"
+    from driftbuild.supply_chain import checksums_create, signature_create
+
+    checksum_path = checksums_create(artifact_paths, root / ".drift" / "artifacts" / "SHA256SUMS")
+    publication_paths = [*artifact_paths, checksum_path]
+    if sign_key is not None:
+        publication_paths.append(signature_create(checksum_path, sign_key))
     if publish:
         if project.github is None:
             raise ExecutionError("Release publication requires GitHub configuration")
-        github_release_create(project.github, tag, artifact_paths, title=release.name, draft=release.draft)
+        github_release_create(project.github, tag, publication_paths, title=release.name, draft=release.draft)
     return tag

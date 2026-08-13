@@ -21,7 +21,7 @@ from driftbuild.package_cache import package_build_root
 from driftbuild.runtime import module_command
 
 
-def _libraries(source_root: Path, config: BuildConfig) -> tuple[Path, ...]:
+def _libraries(source_root: Path, config: BuildConfig, package: PackageSpec) -> tuple[Path, ...]:
     suffixes = {".lib", ".a"}
     if config.platform == "win32":
         suffixes.add(".dll")
@@ -29,13 +29,44 @@ def _libraries(source_root: Path, config: BuildConfig) -> tuple[Path, ...]:
         suffixes.add(".dylib")
     else:
         suffixes.add(".so")
-    roots = [path for name in ("lib", "libs", "bin") for path in (source_root / name,) if path.is_dir()]
-    return tuple(
+    roots = (source_root,)
+    variant_names = ("debug",) if config.build_type == "debug" else ("release", "relwithdebinfo")
+    all_libraries = tuple(
         path.resolve()
         for root in roots
         for path in sorted(root.rglob("*"))
         if path.is_file() and (path.suffix.casefold() in suffixes or ".so." in path.name)
     )
+    preferred = tuple(
+        path
+        for path in all_libraries
+        if any(part.casefold() in variant_names for part in path.relative_to(source_root).parts)
+    )
+    candidates = preferred or tuple(
+        path
+        for path in all_libraries
+        if not any(part.casefold() in ("debug", "release", "relwithdebinfo") for part in path.relative_to(source_root).parts)
+    )
+    if all_libraries and not candidates:
+        raise ConfigurationError(
+            f"Prebuilt package {package.name} has no {config.build_type} or configuration-neutral libraries"
+        )
+    if package.linkage == "static":
+        selected = tuple(path for path in candidates if path.suffix.casefold() in (".a", ".lib"))
+        if not selected:
+            raise ConfigurationError(f"Prebuilt package {package.name} has no static libraries")
+        return selected
+    if package.linkage == "shared":
+        selected = tuple(
+            path
+            for path in candidates
+            if path.suffix.casefold() in (".dll", ".so", ".dylib") or ".so." in path.name
+        )
+        import_libraries = tuple(path for path in candidates if path.suffix.casefold() == ".lib")
+        if not selected:
+            raise ConfigurationError(f"Prebuilt package {package.name} has no shared libraries")
+        return (*import_libraries, *selected)
+    return candidates
 
 
 def project_import(source_root: Path, config: BuildConfig, package: PackageSpec) -> ProjectSpec:
@@ -45,7 +76,7 @@ def project_import(source_root: Path, config: BuildConfig, package: PackageSpec)
     )
     if not include_dirs and any(source_root.glob("*.h")):
         include_dirs = (source_root.resolve(),)
-    libraries = _libraries(source_root, config)
+    libraries = _libraries(source_root, config, package)
     if not include_dirs and not libraries:
         raise ConfigurationError(f"Prebuilt package {package.name} has no headers or native libraries")
     link_libraries = tuple(path for path in libraries if path.suffix.casefold() not in (".dll", ".so", ".dylib"))

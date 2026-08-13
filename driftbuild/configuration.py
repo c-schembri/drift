@@ -31,6 +31,7 @@ def config_payload(config: BuildConfig) -> dict[str, object]:
         "warnings": config.warnings,
         "unity_size": config.unity_size,
         "profile": config.profile,
+        "hermetic": config.hermetic,
     }
 
 
@@ -50,6 +51,7 @@ def config_key(config: BuildConfig) -> str:
         and config.warnings == "default"
         and not config.unity_size
         and config.profile == "host"
+        and not config.hermetic
     ):
         return readable
     encoded = json.dumps(config_payload(config), sort_keys=True, separators=(",", ":")).encode("utf-8")

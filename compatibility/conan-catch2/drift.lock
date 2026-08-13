@@ -1,0 +1,35 @@
+{
+  "packages": [
+    {
+      "content_sha256": "097b082b96f25ed293e4715d3a469ee1809850b1c691d5b5c2c4db0f962266ed",
+      "name": "catch2",
+      "overlay": null,
+      "provenance": {
+        "adapter_versions": {
+          "cmake": "3.31.6",
+          "conan": "2.31.2",
+          "meson": "1.12.0"
+        },
+        "adapters": [
+          "conan",
+          "cmake",
+          "meson"
+        ],
+        "components": [],
+        "features": [],
+        "linkage": "auto",
+        "options": {},
+        "patches": []
+      },
+      "request_sha256": "f3b1784cc1dd68aac1519c1e1bb450c13354e68ea0ee53d7558c407b7a0247c2",
+      "scope": "",
+      "source": {
+        "kind": "git",
+        "revision": "b3fb4b9feafcd8d91c5cb510a4775143fdbef02f",
+        "submodules": false,
+        "url": "https://github.com/catchorg/Catch2.git"
+      }
+    }
+  ],
+  "version": 4
+}
