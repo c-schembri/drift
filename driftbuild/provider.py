@@ -24,7 +24,7 @@ def process_tree_start(arguments: list[str] | tuple[str, ...], **kwargs: Any) ->
     """Start a process in an independently stoppable process group."""
     if os.name == "nt":
         creation_flags = kwargs.pop("creationflags", 0)
-        kwargs["creationflags"] = creation_flags | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        kwargs["creationflags"] = creation_flags | 0x00000200 | 0x08000000
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(arguments, **kwargs)
@@ -48,7 +48,7 @@ def process_tree_stop(process: subprocess.Popen[Any], timeout: float = 10.0) -> 
             raise RuntimeError(f"Failed to stop process tree {process.pid}: {result.stdout.strip()}")
     else:
         try:
-            os.killpg(process.pid, signal.SIGTERM)  # type: ignore[attr-defined]
+            os.kill(-process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
     try:
@@ -57,7 +57,7 @@ def process_tree_stop(process: subprocess.Popen[Any], timeout: float = 10.0) -> 
         if os.name == "nt":
             process.kill()
         else:
-            os.killpg(process.pid, signal.SIGKILL)  # type: ignore[attr-defined]
+            os.kill(-process.pid, signal.SIGKILL)
         process.wait(timeout=timeout)
 
 
