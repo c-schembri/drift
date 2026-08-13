@@ -8,7 +8,7 @@ import pytest
 
 from driftbuild import __version__
 from driftbuild.configuration import config_key
-from driftbuild.fast import _cached_build, _ninja_build_arguments, _operation_find, _state_load, main
+from driftbuild.fast import _architecture, _cached_build, _ninja_build_arguments, _operation_find, _state_load, main
 from driftbuild.model import BuildConfig
 from driftbuild.versions import NINJA_VERSION
 
@@ -48,7 +48,7 @@ def test_cached_build_uses_shared_ninja_provider_values_and_environment(
     root = tmp_path / "project"
     root.mkdir()
     (root / "drift.toml").write_text("[project]\n", encoding="utf-8")
-    config = BuildConfig(sys.platform, values=values)
+    config = BuildConfig(sys.platform, _architecture(), values=values)
     build_root = root / ".drift" / "build" / config_key(config)
     build_root.mkdir(parents=True)
     (build_root / "build.ninja").touch()
