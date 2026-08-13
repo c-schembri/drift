@@ -6,7 +6,8 @@ import pytest
 
 from driftbuild.api import BuildConfig, ProjectApi
 from driftbuild.bootstrap import ninja_resolve
-from driftbuild.cmake import project_import
+from driftbuild.cmake import _default_target, project_import
+from driftbuild.model import GitSource, PackageSpec, TargetSpec
 
 
 @pytest.fixture(autouse=True)
@@ -91,3 +92,13 @@ def test_cmake_package_linkage_selects_static_default(tmp_path: Path) -> None:
 
     outputs = imported.targets[0].outputs
     assert any(path.suffix.casefold() in (".a", ".lib") for path in outputs)
+
+
+def test_cmake_default_prefers_primary_shared_library_over_test_support() -> None:
+    package = PackageSpec("sdl3", GitSource("https://example.invalid/sdl", "1" * 40))
+    targets = (
+        TargetSpec("SDL3_test", "external_library"),
+        TargetSpec("SDL3-shared", "external_library"),
+    )
+
+    assert _default_target(package, targets).name == "SDL3-shared"  # type: ignore[union-attr]

@@ -227,12 +227,22 @@ def _default_target(package: PackageSpec | str, targets: tuple[TargetSpec, ...])
         return TargetRef(libraries[0].name)
     package_key = re.sub(r"[^a-z0-9]", "", package_name.casefold())
 
-    def score(target: TargetSpec) -> tuple[int, int, int, str]:
+    def score(target: TargetSpec) -> tuple[int, int, int, int, str]:
         target_key = re.sub(r"[^a-z0-9]", "", target.name.casefold())
         match = 0 if target_key == package_key else 1 if target_key.startswith(package_key) else 2
         requested = package.linkage if isinstance(package, PackageSpec) else "auto"
-        linkage = 0 if requested != "auto" and requested in target.name.casefold() else 1
-        return match, linkage, len(target.name), target.name.casefold()
+        target_name = target.name.casefold()
+        auxiliary = 1 if any(word in target_name for word in ("test", "example", "benchmark")) else 0
+        linkage = (
+            0
+            if requested != "auto" and requested in target_name
+            else 0
+            if requested == "auto" and "shared" in target_name
+            else 1
+            if requested == "auto" and "static" in target_name
+            else 2
+        )
+        return match, auxiliary, linkage, len(target.name), target_name
 
     selected = min(libraries, key=score)
     return TargetRef(selected.name) if score(selected)[0] < 2 else None
