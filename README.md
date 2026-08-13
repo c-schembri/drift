@@ -59,7 +59,7 @@ export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/drift/bin:$PATH"
 drift --version
 ```
 
-Add that export to your shell profile. Set `DRIFT_VERSION=0.4.0` when running either installer to select an exact
+Add that export to your shell profile. Set `DRIFT_VERSION=0.4.1` when running either installer to select an exact
 release. Native archives are currently published for Windows x86_64, Linux x86_64, and macOS arm64.
 
 Once installed, Drift updates itself without Python or uv:
@@ -86,7 +86,7 @@ hello/
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.4.0"
+requires-drift = "==0.4.1"
 ```
 
 `build.py` declares the graph through the supported `driftbuild.api` surface:
@@ -219,7 +219,7 @@ transitive packages, overlays, and security limits.
 | --- | --- |
 | `drift configure` | Validate the graph and generate Ninja files plus `compile_commands.json` |
 | `drift build [targets...]` | Incrementally build defaults or named targets and print phase timings |
-| `drift run [target] [-- args...]` | Build and launch an executable |
+| `drift run [target] [-- args...]` | Build and launch an executable or a declared project run workflow |
 | `drift test [names...]` | Build and run declared tests |
 | `drift clean [targets...]` | Remove selected outputs through Ninja |
 | `drift targets` | List declared targets and defaults |
@@ -329,7 +329,7 @@ Projects can require an exact Drift release in `drift.toml`:
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.4.0"
+requires-drift = "==0.4.1"
 ```
 
 ```console

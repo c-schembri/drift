@@ -109,6 +109,8 @@ the set can be narrowed with `checks=`.
   nodes used by `drift command ... --help` and shell completion. Handlers receive `CommandContext` and may be synchronous
   or asynchronous. Set `passthrough=True` for a command family that owns its own parser and must receive the remaining
   arguments unchanged.
+- Commands rooted at `("run", ...)` extend `drift run` with project-specific launch workflows. They can build declared
+  targets first and then supply configuration, materialize runtime state, or select one of several related programs.
 
 ## Project options and local SDKs
 
@@ -172,7 +174,7 @@ separate virtual environment.
 
 ## Project requirement
 
-Set `requires-drift = "==0.4.0"` in the manifest's `[project]` table to pin a project to one Drift release. Every
+Set `requires-drift = "==0.4.1"` in the manifest's `[project]` table to pin a project to one Drift release. Every
 provider-loading command validates the constraint. `drift bootstrap` checks it without loading the provider, and
 `drift bootstrap --install` installs an exact pinned release through Drift's verified self-updater.
 

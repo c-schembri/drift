@@ -118,6 +118,38 @@ def test_run_separates_target_from_program_arguments(tmp_path: Path, monkeypatch
     assert received == ("app", ("one", "two"))
 
 
+def test_run_dispatches_provider_subcommands(tmp_path: Path) -> None:
+    received: tuple[str, ...] = ()
+
+    def handler(_context, values):  # type: ignore[no-untyped-def]
+        nonlocal received
+        received = values
+        return 3
+
+    project = ProjectSpec(
+        "sample",
+        commands=(CommandSpec(("run", "server"), "Run a server", handler, passthrough=True),),
+    )
+    arguments = argparse.Namespace(arguments=["server", "global"], verbose=False, offline=False)
+
+    assert _run(arguments, project, tmp_path, BuildConfig("test")) == 3
+    assert received == ("global",)
+
+
+def test_run_dispatches_provider_subcommand_help(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    project = ProjectSpec(
+        "sample",
+        commands=(
+            CommandSpec(("run", "server", "global"), "Run the global server", lambda *_args: 0),
+            CommandSpec(("run", "server", "shard"), "Run a shard server", lambda *_args: 0),
+        ),
+    )
+    arguments = argparse.Namespace(arguments=["server"], verbose=False, offline=False)
+
+    assert _run(arguments, project, tmp_path, BuildConfig("test")) == 0
+    assert "global" in capsys.readouterr().out
+
+
 def test_provider_command_can_receive_unparsed_arguments(tmp_path: Path) -> None:
     received: tuple[str, ...] = ()
 

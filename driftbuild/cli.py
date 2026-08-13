@@ -569,6 +569,14 @@ def _run(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config
     from driftbuild.runner import build_and_run
 
     values = list(arguments.arguments)
+    provider_arguments = ["run", *values]
+    run_commands = [command for command in project.commands if command.path[:1] == ("run",)]
+    matched = any(provider_arguments[: len(command.path)] == list(command.path) for command in run_commands)
+    branch = any(list(command.path[: len(provider_arguments)]) == provider_arguments for command in run_commands)
+    if matched or branch:
+        delegated = argparse.Namespace(**vars(arguments))
+        delegated.arguments = provider_arguments if matched else [*provider_arguments, "--help"]
+        return _provider_command(delegated, project, root, config)
     separator = values.index("--") if "--" in values else len(values)
     selectors = values[:separator]
     program_arguments = values[separator + 1 :] if separator < len(values) else ()
