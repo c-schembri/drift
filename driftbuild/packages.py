@@ -48,6 +48,7 @@ LOCK_VERSION = 4
 _MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 _MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_ARCHIVE_FILES = 100_000
+_EXTRACTED_MTIME = 315532800
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,7 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 with bundle.open(member) as source, output.open("wb") as target:
                     shutil.copyfileobj(source, target)
+                os.utime(output, (_EXTRACTED_MTIME, _EXTRACTED_MTIME))
         return
     try:
         tar_bundle = tarfile.open(archive, mode="r:*")
@@ -254,6 +256,7 @@ def _extract_archive(archive: Path, destination: Path) -> None:
             tar_output.parent.mkdir(parents=True, exist_ok=True)
             with tar_source, tar_output.open("wb") as target:
                 shutil.copyfileobj(tar_source, target)
+            os.utime(tar_output, (_EXTRACTED_MTIME, _EXTRACTED_MTIME))
 
 
 def _download(source: ArchiveSource, destination: Path, offline: bool, declaration_root: Path) -> None:

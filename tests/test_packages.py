@@ -207,6 +207,28 @@ def test_archive_path_traversal_is_rejected(tmp_path: Path) -> None:
     assert not (tmp_path / "outside.txt").exists()
 
 
+def test_archive_files_receive_one_deterministic_timestamp(tmp_path: Path) -> None:
+    archive = tmp_path / "ordered.zip"
+    checksum = _archive_create(
+        archive,
+        {
+            "ordered/generated": "generated\n",
+            "ordered/source": "source\n",
+        },
+    )
+    api = ProjectApi(tmp_path, BuildConfig(sys.platform))
+    api.package(
+        "ordered",
+        source=api.archive(str(archive), checksum, strip_prefix="ordered"),
+        adapter="prebuilt",
+    )
+
+    lock = package_lock_create(api.project("sample"), tmp_path, tmp_path / "store")
+    source = tmp_path / "store" / "sources" / lock.packages[0].content_sha256
+
+    assert (source / "generated").stat().st_mtime_ns == (source / "source").stat().st_mtime_ns
+
+
 def test_git_package_records_exact_tree(tmp_path: Path) -> None:
     git = shutil.which("git")
     if git is None:
