@@ -29,6 +29,11 @@ def test_cmake_file_api_imports_buildable_graph_and_default(tmp_path: Path) -> N
 project(sample C)
 add_library(sample SHARED sample.c)
 target_include_directories(sample PUBLIC include)
+if(NOT WIN32)
+  target_compile_options(sample PRIVATE "-x" "c-header")
+  target_link_options(sample PRIVATE "-Wl,--no-undefined")
+  target_link_libraries(sample PRIVATE m)
+endif()
 """,
         encoding="utf-8",
     )
@@ -43,6 +48,10 @@ target_include_directories(sample PUBLIC include)
     assert "--build" in target.action.command
     assert (source / "include").resolve() in target.include_dirs
     assert target.outputs
+    assert target.compile_arguments == ()
+    if sys.platform != "win32":
+        assert "-lm" in target.link_arguments
+        assert all("no-undefined" not in value for value in target.link_arguments)
 
 
 def test_cmake_file_api_configuration_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

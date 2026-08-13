@@ -158,37 +158,6 @@ def _include_dirs(target: dict[str, Any]) -> tuple[Path, ...]:
     return tuple(includes)
 
 
-def _compile_interface(target: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    defines: list[str] = []
-    arguments: list[str] = []
-    for source_group in target.get("target_sources", []):
-        if not isinstance(source_group, dict) or not isinstance(source_group.get("parameters"), list):
-            continue
-        parameters = source_group["parameters"]
-        index = 0
-        while index < len(parameters):
-            value = parameters[index]
-            if not isinstance(value, str):
-                index += 1
-                continue
-            if value in ("-I", "/I"):
-                index += 2
-                continue
-            if value.startswith(("-I", "/I")):
-                index += 1
-                continue
-            if value == "-D" and index + 1 < len(parameters) and isinstance(parameters[index + 1], str):
-                defines.append(parameters[index + 1])
-                index += 2
-                continue
-            if value.startswith(("-D", "/D")) and len(value) > 2:
-                defines.append(value[2:])
-            else:
-                arguments.append(value)
-            index += 1
-    return tuple(dict.fromkeys(defines)), tuple(dict.fromkeys(arguments))
-
-
 def _external_dependencies(build_root: Path) -> dict[str, Dependency]:
     payload = _json_read(build_root / "meson-info" / "intro-dependencies.json")
     if not isinstance(payload, list):
@@ -281,7 +250,6 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
         if not outputs:
             continue
         includes = _include_dirs(value)
-        defines, compile_arguments = _compile_interface(value)
         dependencies: list[Dependency | TargetDependency] = []
         raw_target_dependencies = value.get("depends")
         target_dependencies = raw_target_dependencies if isinstance(raw_target_dependencies, list) else []
@@ -324,8 +292,6 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
                 name,
                 _TARGET_KINDS[target_type],
                 include_dirs=includes,
-                defines=defines,
-                compile_arguments=compile_arguments,
                 dependencies=tuple(dependencies),
                 outputs=action.outputs,
                 action=action,

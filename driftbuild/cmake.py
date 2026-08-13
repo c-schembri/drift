@@ -169,41 +169,27 @@ def _target_includes(target: dict[str, Any]) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def _target_compile_interface(target: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    defines: list[str] = []
-    arguments: list[str] = []
-    groups = target.get("compileGroups", [])
-    if not isinstance(groups, list):
-        return (), ()
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        raw_defines = group.get("defines", [])
-        if isinstance(raw_defines, list):
-            defines.extend(
-                value["define"]
-                for value in raw_defines
-                if isinstance(value, dict) and isinstance(value.get("define"), str)
-            )
-        fragments = group.get("compileCommandFragments", [])
-        if isinstance(fragments, list):
-            for value in fragments:
-                if isinstance(value, dict) and isinstance(value.get("fragment"), str):
-                    arguments.extend(shlex.split(value["fragment"], posix=os.name != "nt"))
-    return tuple(dict.fromkeys(defines)), tuple(dict.fromkeys(arguments))
-
-
 def _target_link_arguments(target: dict[str, Any]) -> tuple[str, ...]:
     link = target.get("link")
     if not isinstance(link, dict) or not isinstance(link.get("commandFragments"), list):
         return ()
     result: list[str] = []
+    fragments: list[str] = []
     for value in link["commandFragments"]:
         if not isinstance(value, dict) or not isinstance(value.get("fragment"), str):
             continue
-        role = value.get("role")
-        if role in ("flags", "libraries", "libraryPath", "frameworkPath"):
-            result.extend(shlex.split(value["fragment"], posix=os.name != "nt"))
+        if value.get("role") in ("flags", "libraries"):
+            fragments.extend(shlex.split(value["fragment"], posix=os.name != "nt"))
+    index = 0
+    while index < len(fragments):
+        value = fragments[index]
+        if value == "-framework" and index + 1 < len(fragments):
+            result.extend((value, fragments[index + 1]))
+            index += 2
+            continue
+        if value.startswith("-l") or value in ("-pthread", "-pthreads") or value.startswith("/DEFAULTLIB:"):
+            result.append(value)
+        index += 1
     return tuple(result)
 
 
@@ -319,14 +305,11 @@ def project_import(
             restat=True,
         )
         kind: TargetKind = "custom" if description.get("type") == "EXECUTABLE" else "external_library"
-        defines, compile_arguments = _target_compile_interface(description)
         targets.append(
             TargetSpec(
                 name=name,
                 kind=kind,
                 include_dirs=_target_includes(description),
-                defines=defines,
-                compile_arguments=compile_arguments,
                 link_arguments=_target_link_arguments(description),
                 dependencies=tuple(dependencies),
                 outputs=action.outputs,
