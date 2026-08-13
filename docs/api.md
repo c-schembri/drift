@@ -37,17 +37,57 @@ another exported target explicitly; `package.component("name")` is an equivalent
 `api.msbuild(project_file, ...)` is an explicit override for ambiguous Visual C++ repositories. Normal packages do not
 need it. Drift reads the selected project and its `ProjectReference` closure but never invokes MSBuild.
 
-`api.command_action(...)` defines a custom action with explicit inputs, outputs, environment, depfile policy, timeout, and Ninja pool. Register constrained pools with `api.pool(PoolSpec(...))`. Command arguments may use the exact tokens `{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap the action with `custom_target` or `external_library`. `runtime_bundle` copies explicit files beside a stamp target. `alias` groups targets.
+`api.command_action(...)` defines a custom action with explicit inputs, outputs, environment, depfile policy, timeout, and Ninja pool. Register constrained pools with `api.pool(PoolSpec(...))`. Command arguments may use the exact tokens `{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap the action with `custom_target` or `external_library`. `runtime_bundle` copies explicit files beside a stamp target. `api.deploy(source, "plugins/name.dll")` preserves a relative runtime destination instead of flattening the file beside the executable. Deployments work on target and prebuilt-dependency runtime files. `alias` groups targets.
+
+`api.cargo(...)` adds Cargo-owned binaries or workspaces to the same target graph. Drift schedules Cargo through Ninja,
+maps its release build type, tracks Rust and manifest inputs, and leaves dependency compilation to Cargo's incremental
+cache. Set `run_target=` to make a Cargo binary available through `drift run`. Use
+`api.cargo_static_library(...)` when a native target links an explicit Cargo-produced archive:
+
+```python
+server = api.cargo(
+    "server",
+    manifest="Server/Cargo.toml",
+    packages=("server",),
+    targets=("server",),
+    run_target="server",
+    target_directory="Server/target",
+)
+ffi = api.cargo_static_library(
+    "ffi",
+    manifest="rust/ffi/Cargo.toml",
+    artifact_name="sample_ffi",
+    include_dirs=("rust/ffi/include",),
+)
+api.cargo_workspace("rust", manifest="Cargo.toml")
+```
+
+Cargo declarations also accept workspace, feature, environment, extra-argument, explicit-input, and explicit-output
+selections. When binary targets or a static-library artifact are selected, Drift discovers Cargo's emitted artifact and
+copies it to a stable configuration output automatically. An explicit `target_directory` is repository-confined;
+omitting it uses the active Drift build directory. `cargo_workspace` registers format, check, Clippy, and test checks;
+the set can be narrowed with `checks=`.
 
 ## Platform services
 
 - `TaskSpec` declares workflow dependencies, subprocess or sync/async handler, retries, timeout, and resource locks.
-- `TestSpec` declares labels, build prerequisites, environment, and timeout.
+- `TestSpec` declares labels, build prerequisites, environment, and timeout. `isolated=True` supplies a temporary home,
+  app-data, config, and temp directory; `{temp}` in declared environment values resolves to that directory.
+- `MatrixSpec` declares Cartesian build or test axes such as build type, compiler, profile, and provider values.
 - `BenchmarkSpec` declares warmups, repetitions, and build prerequisites.
 - `ArtifactSpec` creates deterministic ZIP or tar.gz archives from source files and target outputs.
 - `ReleaseSpec` ties versions and artifacts to a tag. `GitHubSpec` enables explicit `gh` publication.
 - `RemoteSpec` configures explicit SSH execution and copy operations.
-- `CommandSpec` and `OptionSpec` expose typed provider commands. Handlers receive `CommandContext` and may be synchronous or asynchronous.
+- `CommandSpec` and `OptionSpec` expose typed provider commands. `CommandGroupSpec` documents intermediate command-tree
+  nodes used by `drift command ... --help` and shell completion. Handlers receive `CommandContext` and may be synchronous
+  or asynchronous. Set `passthrough=True` for a command family that owns its own parser and must receive the remaining
+  arguments unchanged.
+
+## Project requirement
+
+Set `requires-drift = "==0.2.0"` in the manifest's `[project]` table to pin a project to one Drift release. Every
+provider-loading command validates the constraint. `drift bootstrap` checks it without loading the provider, and
+`drift bootstrap --install` installs an exact pinned release through Drift's verified self-updater.
 
 API v1 is the stable provider contract. Drift continues to load API v0 manifests for migration, but new declarations
 should use `api-version = 1`. Additive fields and new declaration types may be introduced within v1; existing names,

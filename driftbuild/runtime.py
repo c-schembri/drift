@@ -20,6 +20,7 @@ _INTERNAL_MODULES = frozenset(
         "driftbuild.adapter_action",
         "driftbuild.autotools",
         "driftbuild.bundle",
+        "driftbuild.cargo",
         "driftbuild.conan",
         "driftbuild.opaque",
         "driftbuild.prebuilt",
@@ -77,8 +78,8 @@ def internal_dispatch(arguments: Sequence[str]) -> int | None:
         pip_main = cast(Callable[[list[str]], int | None], importlib.import_module("pip._internal.cli.main").main)
         return int(pip_main(list(arguments[1:])) or 0)
     if arguments and arguments[0] == _CONAN_MARKER:
-        from driftbuild.bootstrap import CONAN_VERSION
         from driftbuild.storage import tool_store_root
+        from driftbuild.versions import CONAN_VERSION
 
         _external_path(tool_store_root() / "conan" / CONAN_VERSION / "site-packages")
         conan_main = cast(Callable[[list[str]], int | None], importlib.import_module("conan.cli.cli").main)

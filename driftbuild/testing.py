@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -51,20 +52,42 @@ def tests_run(
         started = time.perf_counter()
         environment = dict(os.environ)
         environment.update(test.environment)
-        result = run(
-            test.command,
-            cwd=root / test.working_directory if test.working_directory else root,
-            environment=environment,
-            timeout_seconds=test.timeout_seconds,
-            capture=True,
-            check=False,
-        )
+        temporary = tempfile.TemporaryDirectory(prefix=f"drift-{test.name}-") if test.isolated else None
+        try:
+            if temporary is not None:
+                home = Path(temporary.name)
+                environment.update(
+                    {
+                        "HOME": str(home),
+                        "USERPROFILE": str(home),
+                        "APPDATA": str(home),
+                        "XDG_CONFIG_HOME": str(home),
+                        "TEMP": str(home),
+                        "TMP": str(home),
+                        "DRIFT_TEST_TEMP": str(home),
+                    }
+                )
+                environment = {name: value.replace("{temp}", str(home)) for name, value in environment.items()}
+            result = run(
+                test.command,
+                cwd=root / test.working_directory if test.working_directory else root,
+                environment=environment,
+                timeout_seconds=test.timeout_seconds,
+                capture=True,
+                check=False,
+            )
+        finally:
+            if temporary is not None:
+                temporary.cleanup()
         output = result.stdout + result.stderr
         return TestResult(test.name, result.returncode == 0, time.perf_counter() - started, output)
 
     with ThreadPoolExecutor(max_workers=jobs or max(1, min(32, os.cpu_count() or 1))) as executor:
         results = tuple(executor.map(execute, selected))
-    failures = [result.name for result in results if not result.passed]
+    failures = [result for result in results if not result.passed]
     if failures:
-        raise ExecutionError(f"Tests failed: {', '.join(failures)}")
+        for result in failures:
+            print(f"--- {result.name} output ---")
+            print(result.output, end="" if result.output.endswith("\n") else "\n")
+        raise ExecutionError(f"Tests failed: {', '.join(result.name for result in failures)}")
     return results

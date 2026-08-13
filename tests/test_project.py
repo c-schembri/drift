@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from driftbuild.api import API_VERSION, BuildConfig, ProjectApi
+from driftbuild.api import API_VERSION, BuildConfig, CommandGroupSpec, Deployment, MatrixSpec, ProjectApi
 from driftbuild.errors import ConfigurationError
 
 
@@ -20,8 +20,12 @@ def test_files_and_tree_are_root_confined_and_sorted(tmp_path: Path) -> None:
 
     assert api.files("source/a.cpp").files == (Path("source/a.cpp"),)
     assert api.tree("source", include=("*.cpp",)).files == (Path("source/a.cpp"), Path("source/z.cpp"))
+    project = api.project("sample")
+    assert project.discovery_directories == (tmp_path / "source",)
     with pytest.raises(ConfigurationError, match="escapes"):
         api.files("../outside.cpp")
+    with pytest.raises(ConfigurationError, match="pattern escapes"):
+        api.tree("source", include=("../*.cpp",))
 
 
 def test_public_and_private_dependencies_are_explicit(tmp_path: Path) -> None:
@@ -42,3 +46,145 @@ def test_project_api_exposes_stable_version(tmp_path: Path) -> None:
 
     assert API_VERSION == 1
     assert api.api_version == 1
+
+
+def test_cargo_declares_workspace_build_with_discovered_inputs(tmp_path: Path) -> None:
+    server = tmp_path / "Server"
+    (server / "src").mkdir(parents=True)
+    (server / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    (server / "Cargo.lock").write_text("", encoding="utf-8")
+    (server / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+    api = ProjectApi(tmp_path, BuildConfig("test", build_type="release"))
+
+    target = api.cargo("server", manifest="Server/Cargo.toml", workspace=True)
+    spec = api.project("sample", defaults=(target,)).targets[0]
+
+    assert spec.action is not None
+    assert spec.action.command[-6:] == (
+        "--manifest",
+        "Server/Cargo.toml",
+        "--target-dir",
+        "{build}",
+        "--release",
+        "--workspace",
+    )
+    assert spec.action.outputs == (Path("cargo-stamps/server.stamp"),)
+    assert spec.action.stamp_outputs is True
+    assert Path("Server/src/main.rs") in spec.action.inputs
+
+
+def test_cargo_rejects_workspace_and_package_selection(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    with pytest.raises(ConfigurationError, match="both a workspace and packages"):
+        api.cargo("server", manifest="Cargo.toml", workspace=True, packages=("server",))
+
+
+def test_cargo_static_library_requires_and_exposes_an_artifact(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[package]\nname='ffi'\nversion='0.1.0'\n", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    target = api.cargo_static_library(
+        "ffi",
+        manifest="Cargo.toml",
+        outputs=("debug/ffi.lib",),
+    )
+    spec = api.project("sample", defaults=(target,)).targets[0]
+
+    assert spec.kind == "external_library"
+    assert spec.outputs == (Path("debug/ffi.lib"),)
+
+
+def test_cargo_run_target_is_exposed_to_drift_run(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[package]\nname='server'\nversion='0.1.0'\n", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    target = api.cargo(
+        "server",
+        manifest="Cargo.toml",
+        packages=("server",),
+        targets=("server",),
+        run_target="server",
+    )
+    spec = api.project("sample", defaults=(target,)).targets[0]
+
+    assert spec.run_command == ("{out}",)
+    assert spec.outputs == (Path("cargo-artifacts/server/server"),)
+
+
+def test_cargo_can_share_a_repository_target_directory(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    target = api.cargo("server", manifest="Cargo.toml", workspace=True, target_directory="target")
+    spec = api.project("sample", defaults=(target,)).targets[0]
+
+    assert spec.action is not None
+    target_index = spec.action.command.index("--target-dir")
+    assert spec.action.command[target_index + 1] == str(tmp_path / "target")
+
+
+def test_cargo_static_library_discovers_a_stable_artifact_output(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[package]\nname='ffi'\nversion='0.1.0'\n", encoding="utf-8")
+    api = ProjectApi(tmp_path, BuildConfig("win32"))
+
+    target = api.cargo_static_library("ffi", manifest="Cargo.toml")
+    spec = api.project("sample", defaults=(target,)).targets[0]
+
+    assert spec.outputs == (Path("cargo-artifacts/ffi/ffi.lib"),)
+    assert spec.action is not None
+    assert "staticlib:ffi" in spec.action.command
+
+
+def test_cargo_workspace_registers_conventional_checks(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    api.cargo_workspace("server", manifest="Cargo.toml", checks=("format", "test"))
+    tests = api.project("sample").tests
+
+    assert [test.name for test in tests] == ["server-format", "server"]
+    assert tests[0].command[:2] == ("cargo", "fmt")
+    assert tests[1].command[:2] == ("cargo", "test")
+
+
+def test_command_groups_and_matrices_are_declared(tmp_path: Path) -> None:
+    api = api_for(tmp_path)
+
+    api.command_group(CommandGroupSpec(("release",), "Release workflows"))
+    api.matrix(MatrixSpec("client", (("build-type", ("debug", "release")), ("flavor", ("developer",)))))
+    project = api.project("sample")
+
+    assert project.command_groups[0].path == ("release",)
+    assert project.matrices[0].axes[0] == ("build-type", ("debug", "release"))
+    with pytest.raises(ConfigurationError, match="matrix operation"):
+        api.matrix(MatrixSpec("invalid", (("compiler", ("gcc",)),), operation="deploy"))  # type: ignore[arg-type]
+
+
+def test_deploy_maps_runtime_input_to_relative_destination(tmp_path: Path) -> None:
+    (tmp_path / "source.dll").write_bytes(b"runtime")
+    api = api_for(tmp_path)
+
+    deployment = api.deploy("source.dll", "plugins/source.dll")
+
+    assert deployment.source == Path("source.dll")
+    assert deployment.destination == Path("plugins/source.dll")
+    with pytest.raises(ConfigurationError, match="relative file path"):
+        api.deploy("source.dll", "../source.dll")
+
+
+def test_dependency_accepts_deployed_external_runtime_file(tmp_path: Path) -> None:
+    external = tmp_path.parent / "external.dll"
+    external.write_bytes(b"runtime")
+    api = api_for(tmp_path)
+
+    dependency = api.dependency(
+        "external",
+        runtime_files=(api.deploy(external, "plugins/external.dll"),),
+    )
+
+    deployed = dependency.runtime_files[0]
+    assert isinstance(deployed, Deployment)
+    assert deployed.source == external.resolve()
+    assert deployed.destination == Path("plugins/external.dll")

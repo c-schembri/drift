@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ class BuildTiming:
     ninja_seconds: float
     phases: tuple[BuildPhaseTiming, ...]
     dry_run: bool = False
+    project_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -115,11 +117,10 @@ def _phase_timings(entries: tuple[_NinjaLogEntry, ...], output_phases: dict[str,
 
 def build_timing_render(timing: BuildTiming) -> str:
     """Render one concise build timing summary."""
-    values = [
-        f"total {timing.total_seconds:.3f}s",
-        f"configure {timing.configure_seconds:.3f}s",
-        f"ninja {timing.ninja_seconds:.3f}s",
-    ]
+    values = [f"total {timing.total_seconds:.3f}s"]
+    if timing.project_seconds:
+        values.append(f"project {timing.project_seconds:.3f}s")
+    values.extend((f"configure {timing.configure_seconds:.3f}s", f"ninja {timing.ninja_seconds:.3f}s"))
     values.extend(
         f"{phase.name} {phase.duration_seconds:.3f}s ({phase.steps} {'job' if phase.steps == 1 else 'jobs'})"
         for phase in timing.phases
@@ -141,7 +142,22 @@ def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildC
     build_root.mkdir(parents=True, exist_ok=True)
     result = BuildResult(generate(project, root, build_root, config, toolchain), toolchain)
     inputs = {str(path): path.stat().st_mtime_ns for path in project_provider_files(root)}
-    state = {"drift_version": __version__, "inputs": inputs}
+    directories = {str(path): path.stat().st_mtime_ns for path in project.discovery_directories}
+    environment = {
+        name: value
+        for name, value in result.toolchain.environment.items()
+        if os.environ.get(name) != value
+    }
+    environment_removed = sorted(name for name in os.environ if name not in result.toolchain.environment)
+    output_phases = {str(path): phase for path, phase in result.generated.output_phases.items()}
+    state = {
+        "drift_version": __version__,
+        "inputs": inputs,
+        "directories": directories,
+        "environment": environment,
+        "environment_removed": environment_removed,
+        "output_phases": output_phases,
+    }
     (build_root / "configured.json").write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     return result
 
@@ -158,9 +174,11 @@ def build(
     explain: bool = False,
     keep_going: bool = False,
     dry_run: bool = False,
+    command_started: float | None = None,
+    project_seconds: float = 0.0,
 ) -> BuildResult:
     """Configure and build selected targets with pinned Ninja."""
-    started = time.perf_counter()
+    started = time.perf_counter() if command_started is None else command_started
     configure_started = time.perf_counter()
     result = configure(project, root, state_root, config)
     configure_seconds = time.perf_counter() - configure_started
@@ -192,6 +210,7 @@ def build(
         ninja_seconds,
         _phase_timings(entries, output_phases),
         dry_run,
+        project_seconds,
     )
     return BuildResult(result.generated, result.toolchain, timing)
 

@@ -2,7 +2,7 @@
 
 Drift is a typed Python project platform with a fast, deterministic Ninja build backend. It replaces sprawling project scripts with one immutable declaration that can describe native targets, workflows, tests, benchmarks, artifacts, releases, GitHub publication, and explicit remote operations.
 
-Drift 0.1 is experimental. It supports Python 3.12, Windows with MSVC, and Linux and macOS with GCC or Clang.
+Drift 0.2 is experimental. It supports Python 3.12, Windows with MSVC, and Linux and macOS with GCC or Clang.
 Pinned Git, archive, and vcpkg packages can be imported through Drift, Conan, CMake, Meson, MSBuild, Autotools,
 Make, B2, SCons, prebuilt layouts, or header-only layouts. Installed system interfaces can be imported through pkg-config.
 
@@ -14,6 +14,7 @@ Create `drift.toml`:
 [project]
 api-version = 1
 provider = "build:project"
+requires-drift = "==0.2.0"
 ```
 
 Then declare a graph in `build.py`:
@@ -66,6 +67,7 @@ Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, Conan 2.31.2, and vcpkg 2026-07-27 are
   an explicit `sources`, `binaries`, `tools`, `conan`, `vcpkg`, or `all` category.
 - `drift cache export/import` moves cache archives between machines; `cache pull/push` uses HTTPS or file URLs.
 - `drift run [project] [target] [-- arguments...]` builds and launches an executable target.
+- `drift output TARGET [--json]` prints the configured outputs of a target for scripts that need to stage artifacts.
 - `drift clean [targets...]` removes default or selected target outputs through Ninja.
 - `drift install --prefix PATH` builds a conventional `include`, `lib`, and `bin` SDK with a verified manifest.
 - `drift generate visual-studio`, `vscode`, and `xcode` create IDE frontends that delegate builds to Drift.
@@ -75,6 +77,9 @@ Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, Conan 2.31.2, and vcpkg 2026-07-27 are
 - `drift targets` lists user targets and marks defaults; `--all` includes imported package targets.
 - `drift task [names...]` executes dependency-aware workflows with retries and resource locks.
 - `drift test`, `drift benchmark`, and `drift artifact` run their typed declarations.
+- `drift matrix [names...]` evaluates and runs declared build or test configuration matrices.
+- `drift completion bash|powershell` emits shell completion including provider command trees.
+- `drift bootstrap [--install]` verifies the project requirement and can install an exact required Drift release.
 - `drift perf` records warm configure and no-op build latency in `.drift/performance.json`.
 - `drift perf --budget FILE` turns platform-specific configure and no-op medians into a CI regression gate.
 - `drift audit` writes a deterministic CycloneDX SBOM and bundled third-party license evidence.
@@ -82,6 +87,11 @@ Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, Conan 2.31.2, and vcpkg 2026-07-27 are
 - `drift self-update` verifies a native release checksum and atomically updates the user installation.
 - `drift remote NAME -- COMMAND...` uses the system SSH client for explicit remote work.
 - `drift command PATH...` invokes sync or async provider-defined commands with typed options.
+
+Providers can declare Cargo binaries, workspaces, and static libraries with `api.cargo(...)`,
+`api.cargo_static_library(...)`, and `api.cargo_workspace(...)`. Drift reads Cargo's JSON artifact stream, publishes
+stable graph outputs, runs those exact binaries through `drift run`, and delegates Rust compilation and incremental
+state to Cargo rather than replacing Cargo.
 
 Builds that execute work report wall-clock total, configure, and Ninja time. Compile, archive, link, and action values
 are accumulated job time, so they can exceed wall-clock time when Ninja runs work in parallel. No-op builds report

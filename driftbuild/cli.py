@@ -36,10 +36,12 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "artifact",
         "audit",
         "benchmark",
+        "bootstrap",
         "build",
         "cache",
         "clean",
         "configure",
+        "completion",
         "doctor",
         "fetch",
         "generate",
@@ -47,7 +49,9 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "inspect",
         "install",
         "lock",
+        "matrix",
         "outdated",
+        "output",
         "perf",
         "run",
         "self-update",
@@ -192,6 +196,10 @@ def _base_parser() -> argparse.ArgumentParser:
 
     configure_parser = commands.add_parser("configure", help="validate the project and generate Ninja files")
     configure_parser.set_defaults(handler=_configure)
+    bootstrap_parser = commands.add_parser("bootstrap", help="verify or install the project-required Drift version")
+    bootstrap_parser.add_argument("--install", action="store_true")
+    bootstrap_parser.add_argument("--repository", default="c-schembri/drift")
+    bootstrap_parser.set_defaults(handler=_project_bootstrap)
     build_parser = commands.add_parser("build", help="build default or named targets")
     build_parser.add_argument("targets", nargs="*")
     build_parser.add_argument("-j", "--jobs", type=int)
@@ -268,6 +276,10 @@ def _base_parser() -> argparse.ArgumentParser:
     targets_parser.add_argument("--all", action="store_true", help="include internal package targets")
     targets_parser.add_argument("--json", action="store_true")
     targets_parser.set_defaults(handler=_targets)
+    output_parser = commands.add_parser("output", help="print configured outputs for one target")
+    output_parser.add_argument("target_name", metavar="TARGET")
+    output_parser.add_argument("--json", action="store_true")
+    output_parser.set_defaults(handler=_output)
     task_parser = commands.add_parser("task", help="run workflow tasks")
     task_parser.add_argument("names", nargs="*")
     task_parser.add_argument("-j", "--jobs", type=int)
@@ -277,6 +289,10 @@ def _base_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("--label", action="append", default=[])
     test_parser.add_argument("-j", "--jobs", type=int)
     test_parser.set_defaults(handler=_test)
+    matrix_parser = commands.add_parser("matrix", help="run a declared configuration matrix")
+    matrix_parser.add_argument("names", nargs="*")
+    matrix_parser.add_argument("-j", "--jobs", type=int)
+    matrix_parser.set_defaults(handler=_matrix)
     benchmark_parser = commands.add_parser("benchmark", help="run declared benchmarks")
     benchmark_parser.add_argument("names", nargs="*")
     benchmark_parser.set_defaults(handler=_benchmark)
@@ -301,9 +317,13 @@ def _base_parser() -> argparse.ArgumentParser:
     remote_parser.add_argument("name")
     remote_parser.add_argument("command", nargs=argparse.REMAINDER)
     remote_parser.set_defaults(handler=_remote)
-    provider_parser = commands.add_parser("command", help="run a provider-defined command")
+    provider_parser = commands.add_parser("command", help="run a provider-defined command", add_help=False)
+    provider_parser.add_argument("-h", "--help", action="store_true", dest="provider_help")
     provider_parser.add_argument("arguments", nargs=argparse.REMAINDER)
     provider_parser.set_defaults(handler=_provider_command)
+    completion_parser = commands.add_parser("completion", help="generate shell completion for Drift and provider commands")
+    completion_parser.add_argument("shell", choices=("bash", "powershell"))
+    completion_parser.set_defaults(handler=_completion)
     generate_parser = commands.add_parser("generate", help="generate IDE integration files")
     generators = generate_parser.add_subparsers(dest="generator", required=True)
     visual_studio_parser = generators.add_parser("visual-studio", help="generate a Visual Studio solution")
@@ -350,6 +370,8 @@ def _build(arguments: argparse.Namespace, project: ProjectSpec, root: Path, conf
         explain=arguments.explain,
         keep_going=arguments.keep_going,
         dry_run=arguments.dry_run,
+        command_started=arguments.command_started,
+        project_seconds=arguments.project_seconds,
     )
     assert result.timing is not None
     print(build_timing_render(result.timing))
@@ -384,6 +406,32 @@ def _lock(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _conf
     if arguments.sign is not None:
         signature_create(lock_path, arguments.sign.resolve())
     print(f"Locked {len(result.packages)} package(s) in {root / 'drift.lock'}")
+    return 0
+
+
+def _project_bootstrap(arguments: argparse.Namespace, _project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
+    from driftbuild.version_requirement import (
+        project_requirement,
+        requirement_exact_version,
+        requirement_satisfied,
+    )
+
+    requirement = project_requirement(root)
+    if requirement is None:
+        print("Project does not declare project.requires-drift")
+        return 0
+    if requirement_satisfied(requirement):
+        print(f"Drift {__version__} satisfies {requirement}")
+        return 0
+    if not arguments.install:
+        raise ExecutionError(f"Drift {__version__} does not satisfy {requirement}; use drift bootstrap --install")
+    version = requirement_exact_version(requirement)
+    if version is None:
+        raise ExecutionError("Automatic bootstrap requires an exact project.requires-drift constraint such as ==1.2.3")
+    from driftbuild.self_update import self_update
+
+    installed, shim = self_update(arguments.repository, version, None, None)
+    print(f"Installed project-required Drift {installed}: {shim}")
     return 0
 
 
@@ -624,6 +672,38 @@ def _benchmark(arguments: argparse.Namespace, project: ProjectSpec, root: Path, 
     return 0
 
 
+def _output(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.build import configure
+
+    generated = configure(project, root, root / ".drift", config).generated
+    if arguments.target_name not in generated.outputs:
+        raise ExecutionError(f"Unknown target: {arguments.target_name}")
+    outputs = [str(path.resolve()) for path in generated.outputs[arguments.target_name]]
+    print(json.dumps(outputs, indent=2) if arguments.json else "\n".join(outputs))
+    return 0
+
+
+def _matrix(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.matrix import matrix_run
+
+    selected = [item for item in project.matrices if not arguments.names or item.name in arguments.names]
+    unknown = set(arguments.names) - {item.name for item in selected}
+    if unknown:
+        raise ExecutionError(f"Unknown matrices: {', '.join(sorted(unknown))}")
+    if not selected:
+        raise ExecutionError("Project declares no configuration matrices")
+    for matrix in selected:
+        matrix_run(
+            matrix,
+            root,
+            root / ".drift",
+            config,
+            jobs=arguments.jobs,
+            offline=arguments.offline,
+        )
+    return 0
+
+
 def _performance(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
     from driftbuild.performance import performance_budget_check, performance_run
 
@@ -739,14 +819,42 @@ def _option_add(parser: argparse.ArgumentParser, option: OptionSpec) -> None:
 
 def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root: Path, _config: BuildConfig) -> int:
     raw = list(arguments.arguments)
-    command = next((item for item in project.commands if raw[: len(item.path)] == list(item.path)), None)
+    if getattr(arguments, "provider_help", False):
+        raw.append("--help")
+    help_requested = raw[-1:] == ["--help"]
+    prefix = tuple(raw[:-1] if help_requested else raw)
+    paths = [item.path for item in project.command_groups] + [item.path for item in project.commands]
+    has_children = any(path[: len(prefix)] == prefix for path in paths)
+    exact_command = next((item for item in project.commands if item.path == prefix), None)
+    if not raw or help_requested and exact_command is None and has_children:
+        _provider_help(project, prefix)
+        return 0
+    matches = [item for item in project.commands if raw[: len(item.path)] == list(item.path)]
+    command = max(matches, key=lambda item: len(item.path), default=None)
     if command is None:
         available = ", ".join(" ".join(item.path) for item in project.commands) or "none"
         raise ExecutionError(f"Unknown provider command. Available: {available}")
+    remaining = raw[len(command.path) :]
+    if command.passthrough:
+        if command.options or command.options_type is not None:
+            raise ExecutionError(f"Command {' '.join(command.path)} cannot combine passthrough and typed options")
+        context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose)
+        sys.path.insert(0, str(root))
+        try:
+            result = command.handler(context, tuple(remaining))
+        finally:
+            sys.path.pop(0)
+        if inspect.isawaitable(result):
+            result = asyncio.run(_await(result))
+        if isinstance(result, CommandResult):
+            if result.message:
+                print(result.message)
+            return result.exit_code
+        return result if isinstance(result, int) else 0
     parser = argparse.ArgumentParser(prog=f"drift command {' '.join(command.path)}", description=command.help)
     for option in command.options:
         _option_add(parser, option)
-    parsed = parser.parse_args(raw[len(command.path) :])
+    parsed = parser.parse_args(remaining)
     values = vars(parsed)
     options: Any = values
     if command.options_type is not None:
@@ -754,7 +862,11 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
             raise ExecutionError(f"Command {' '.join(command.path)} options_type must be a dataclass")
         options = command.options_type(**values)
     context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose)
-    result = command.handler(context, options)
+    sys.path.insert(0, str(root))
+    try:
+        result = command.handler(context, options)
+    finally:
+        sys.path.pop(0)
     if inspect.isawaitable(result):
         result = asyncio.run(_await(result))
     if isinstance(result, CommandResult):
@@ -764,24 +876,69 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
     return result if isinstance(result, int) else 0
 
 
+def _provider_help(project: ProjectSpec, prefix: tuple[str, ...]) -> None:
+    group = next((item for item in project.command_groups if item.path == prefix), None)
+    title = "drift command" + (" " + " ".join(prefix) if prefix else "")
+    if group is not None:
+        print(f"{title}: {group.help}")
+    else:
+        print(title)
+    children: dict[str, str] = {}
+    for group_item in project.command_groups:
+        if group_item.path[: len(prefix)] == prefix and len(group_item.path) == len(prefix) + 1:
+            children[group_item.path[-1]] = group_item.help
+    for command_item in project.commands:
+        if command_item.path[: len(prefix)] == prefix and len(command_item.path) == len(prefix) + 1:
+            children[command_item.path[-1]] = command_item.help
+    if children:
+        print("\nCommands:")
+        for name, help_text in sorted(children.items()):
+            print(f"  {name:20} {help_text}")
+
+
+def _completion(arguments: argparse.Namespace, project: ProjectSpec, _root: Path, _config: BuildConfig) -> int:
+    builtins = (
+        "artifact audit benchmark bootstrap build cache clean command completion configure doctor fetch generate "
+        "graph inspect install lock matrix outdated output perf release remote run self-update task targets test update"
+    ).split()
+    paths = [item.path for item in project.command_groups] + [item.path for item in project.commands]
+    provider = [part for path in paths for part in path]
+    words = " ".join(sorted(set((*builtins, *provider))))
+    if arguments.shell == "bash":
+        print(f"_drift_complete() {{ COMPREPLY=( $(compgen -W '{words}' -- \"${{COMP_WORDS[COMP_CWORD]}}\") ); }}")
+        print("complete -F _drift_complete drift")
+    else:
+        quoted = ",".join(f"'{word}'" for word in words.split())
+        print("Register-ArgumentCompleter -Native -CommandName drift -ScriptBlock {")
+        print("  param($wordToComplete)")
+        print(f"  @({quoted}) | Where-Object {{ $_ -like \"$wordToComplete*\" }}")
+        print("}")
+    return 0
+
+
 async def _await(value: Any) -> Any:
     return await value
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, command_started: float | None = None) -> int:
     """Run Drift and convert expected failures to concise diagnostics."""
+    import time
+
+    started = time.perf_counter() if command_started is None else command_started
     parser = _base_parser()
     try:
         raw_arguments = list(sys.argv[1:] if argv is None else argv)
         arguments = parser.parse_args(_project_directory_normalize(raw_arguments))
         projectless = arguments.operation in ("cache", "self-update", "standalone")
+        manifest_only = arguments.operation == "bootstrap"
         root = (
             (Path(arguments.root).resolve() if arguments.root else Path.cwd().resolve())
             if projectless
             else _root(arguments)
         )
+        project_started = time.perf_counter()
         config = _configuration(arguments, root)
-        project = ProjectSpec("drift-cache") if projectless else project_load(root, config)
+        project = ProjectSpec("drift-bootstrap") if projectless or manifest_only else project_load(root, config)
         if arguments.operation not in (
             "lock",
             "fetch",
@@ -792,11 +949,15 @@ def main(argv: list[str] | None = None) -> int:
             "cache",
             "standalone",
             "self-update",
+            "completion",
+            "matrix",
         ):
             from driftbuild.packages import packages_compose
 
             project = packages_compose(project, root, config, offline=arguments.offline)
         project_validate(project)
+        arguments.command_started = started
+        arguments.project_seconds = time.perf_counter() - project_started
         return int(arguments.handler(arguments, project, root, config))
     except DriftError as error:
         print(f"drift: error: {error}", file=sys.stderr)

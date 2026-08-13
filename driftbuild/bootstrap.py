@@ -25,12 +25,7 @@ from pathlib import Path, PurePosixPath
 from driftbuild.errors import ConfigurationError
 from driftbuild.runtime import script_command
 from driftbuild.storage import tool_store_root
-
-NINJA_VERSION = "1.13.1"
-CMAKE_VERSION = "3.31.6"
-MESON_VERSION = "1.12.0"
-CONAN_VERSION = "2.31.2"
-VCPKG_VERSION = "2026-07-27"
+from driftbuild.versions import CMAKE_VERSION, CONAN_VERSION, MESON_VERSION, NINJA_VERSION, VCPKG_VERSION
 
 _MESON_WHEEL = (
     "https://files.pythonhosted.org/packages/07/68/"

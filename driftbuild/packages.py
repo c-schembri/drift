@@ -29,6 +29,7 @@ from driftbuild.model import (
     BuildInput,
     CompileInterface,
     Dependency,
+    Deployment,
     GitSource,
     LinkInterface,
     MsbuildProject,
@@ -819,6 +820,7 @@ def _input_rebase(
 def _dependency_rebase(
     dependency: Dependency,
     package_root: Path,
+    names: dict[str, str],
     extra_roots: tuple[Path, ...],
     allow_external: bool,
 ) -> Dependency:
@@ -847,7 +849,12 @@ def _dependency_rebase(
             dependency.link.arguments,
         ),
         tuple(
-            _package_path(package_root, value, extra_roots, allow_external=allow_external)
+            Deployment(
+                _input_rebase(value.source, package_root, names, extra_roots, allow_external),
+                value.destination,
+            )
+            if isinstance(value, Deployment)
+            else _input_rebase(value, package_root, names, extra_roots, allow_external)
             for value in dependency.runtime_files
         ),
     )
@@ -881,7 +888,7 @@ def _package_project_transform(
         dependencies: list[Dependency | TargetDependency] = []
         for dependency in target.dependencies:
             if isinstance(dependency, Dependency):
-                dependencies.append(_dependency_rebase(dependency, package_root, extra_roots, allow_external))
+                dependencies.append(_dependency_rebase(dependency, package_root, names, extra_roots, allow_external))
             elif isinstance(dependency.target, PackageTargetRef):
                 key = dependency.target.package, dependency.target.target
                 selected = transitive_exports.get(key)
@@ -939,7 +946,12 @@ def _package_project_transform(
                 dependencies=tuple(dependencies),
                 objects=tuple(TargetRef(names[reference.name]) for reference in target.objects),
                 runtime_files=tuple(
-                    _input_rebase(value, package_root, names, extra_roots, allow_external)
+                    Deployment(
+                        _input_rebase(value.source, package_root, names, extra_roots, allow_external),
+                        value.destination,
+                    )
+                    if isinstance(value, Deployment)
+                    else _input_rebase(value, package_root, names, extra_roots, allow_external)
                     for value in target.runtime_files
                 ),
                 outputs=outputs,

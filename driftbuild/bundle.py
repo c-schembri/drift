@@ -17,9 +17,13 @@ def main() -> int:
     payload: dict[str, Any] = json.loads(arguments.spec.read_text(encoding="utf-8"))
     destination = Path(payload["destination"])
     destination.mkdir(parents=True, exist_ok=True)
-    for source_text in payload["files"]:
-        source = Path(source_text)
-        target = destination / source.name
+    entries = payload.get("entries")
+    if entries is None:
+        entries = ({"source": source, "destination": Path(source).name} for source in payload["files"])
+    for entry in entries:
+        source = Path(entry["source"])
+        target = destination / entry["destination"]
+        target.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != target.resolve():
             shutil.copy2(source, target)
     stamp = Path(payload["stamp"])

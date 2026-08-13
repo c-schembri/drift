@@ -7,10 +7,10 @@ import json
 import os
 from pathlib import Path
 
-from driftbuild.bootstrap import CMAKE_VERSION, CONAN_VERSION, MESON_VERSION, VCPKG_VERSION
 from driftbuild.configuration import config_payload
 from driftbuild.model import BuildConfig, PackageSpec
 from driftbuild.storage import drift_home
+from driftbuild.versions import CMAKE_VERSION, CONAN_VERSION, MESON_VERSION, VCPKG_VERSION
 
 
 def binary_cache_root() -> Path:

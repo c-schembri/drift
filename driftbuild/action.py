@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,12 @@ def main() -> int:
         timeout_seconds=payload["timeout_seconds"],
         check=False,
     )
+    if result.returncode == 0 and payload.get("stamp_outputs", False):
+        timestamp = time.time_ns()
+        for output in payload["outputs"]:
+            path = Path(output)
+            path.touch()
+            os.utime(path, ns=(timestamp, timestamp))
     return result.returncode
 
 

@@ -17,6 +17,7 @@ from driftbuild.model import (
     BuildConfig,
     BuildInput,
     Dependency,
+    Deployment,
     ProjectSpec,
     TargetDependency,
     TargetRef,
@@ -242,8 +243,14 @@ def _runtime_files(
     targets: Mapping[str, TargetSpec],
     outputs: Mapping[str, tuple[Path, ...]],
     root: Path,
-) -> list[Path]:
-    result = [_source_path(root, value, outputs) for value in target.runtime_files]
+) -> list[tuple[Path, Path]]:
+    def entry(value: Path | Artifact | Deployment) -> tuple[Path, Path]:
+        if isinstance(value, Deployment):
+            return _source_path(root, value.source, outputs), value.destination
+        source = _source_path(root, value, outputs)
+        return source, Path(source.name)
+
+    result = [entry(value) for value in target.runtime_files]
     visited: set[str] = set()
 
     def add_target(name: str) -> None:
@@ -251,30 +258,33 @@ def _runtime_files(
             return
         visited.add(name)
         dependency = targets[name]
-        result.extend(_source_path(root, value, outputs) for value in dependency.runtime_files)
+        result.extend(entry(value) for value in dependency.runtime_files)
         if dependency.kind == "shared_library":
-            result.extend(path for path in outputs[name] if path.suffix.casefold() != ".lib")
+            result.extend((path, Path(path.name)) for path in outputs[name] if path.suffix.casefold() != ".lib")
         if dependency.kind == "alias":
             for reference in dependency.objects:
                 add_target(reference.name)
         for nested in dependency.dependencies:
             if isinstance(nested, Dependency):
-                result.extend(path if path.is_absolute() else root / path for path in nested.runtime_files)
+                result.extend(entry(value) for value in nested.runtime_files)
             else:
                 add_target(_dependency_target_name(nested))
 
     for dependency in target.dependencies:
         if isinstance(dependency, Dependency):
-            result.extend(path if path.is_absolute() else root / path for path in dependency.runtime_files)
+            result.extend(entry(value) for value in dependency.runtime_files)
         else:
             add_target(_dependency_target_name(dependency))
-    resolved = list(dict.fromkeys(path.resolve() for path in result if path.is_file() or path.is_absolute()))
+    resolved = list(
+        dict.fromkeys((path.resolve(), destination) for path, destination in result if path.is_file() or path.is_absolute())
+    )
     names: dict[str, Path] = {}
-    for path in resolved:
-        existing = names.get(path.name.casefold())
+    for path, destination in resolved:
+        key = destination.as_posix().casefold()
+        existing = names.get(key)
         if existing is not None and existing != path:
-            raise ConfigurationError(f"Runtime files collide at {path.name}: {existing} and {path}")
-        names[path.name.casefold()] = path
+            raise ConfigurationError(f"Runtime files collide at {destination}: {existing} and {path}")
+        names[key] = path
     return resolved
 
 
@@ -371,6 +381,7 @@ def generate(
             "  rspfile = $response_file",
             "  rspfile_content = $in $link_arguments",
             "  description = LINK $out",
+            "  restat = 1",
             "",
         ]
     else:
@@ -542,6 +553,7 @@ def generate(
                 "command": list(target.action.command),
                 "environment": dict(target.action.environment),
                 "timeout_seconds": target.action.timeout_seconds,
+                "stamp_outputs": target.action.stamp_outputs,
                 "outputs": [str(path) for path in action_outputs],
                 "inputs": [str(path) for path in inputs],
                 "root": str(root),
@@ -569,11 +581,14 @@ def generate(
             output_phases.update((path, "action") for path in action_outputs)
 
         if target.kind == "runtime_bundle":
-            bundle_files = [_source_path(root, value, outputs) for value in target.runtime_files]
+            bundle_files = _runtime_files(target, targets, outputs, root)
             output = outputs[target.name][0]
             destination = output.parent
             payload = {
-                "files": [str(path) for path in bundle_files],
+                "entries": [
+                    {"source": str(path), "destination": relative.as_posix()}
+                    for path, relative in bundle_files
+                ],
                 "destination": str(destination),
                 "stamp": str(output),
             }
@@ -581,7 +596,7 @@ def generate(
             _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
             runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
             lines += [
-                f"build {_ninja(output)}: action {' '.join(_ninja(path) for path in bundle_files)}",
+                f"build {_ninja(output)}: action {' '.join(_ninja(path) for path, _relative in bundle_files)}",
                 f"  command = {runner}",
                 f"  description = BUNDLE {target.name}",
                 "  restat = 1",
@@ -673,11 +688,18 @@ def generate(
 
         if target.kind == "executable":
             runtime_files = _runtime_files(target, targets, outputs, root)
-            staged_files = [path for path in runtime_files if path.parent.resolve() != output.parent.resolve()]
+            staged_files = [
+                (path, relative)
+                for path, relative in runtime_files
+                if path.resolve() != (output.parent / relative).resolve()
+            ]
             if staged_files:
                 stamp = build_root / "runtime" / f"{target.name}.stamp"
                 payload = {
-                    "files": [str(path) for path in staged_files],
+                    "entries": [
+                        {"source": str(path), "destination": relative.as_posix()}
+                        for path, relative in staged_files
+                    ],
                     "destination": str(output.parent),
                     "stamp": str(stamp),
                 }
@@ -685,7 +707,7 @@ def generate(
                 _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
                 runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
                 lines += [
-                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path in staged_files)} | {_ninja(output)}",
+                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path, _relative in staged_files)} | {_ninja(output)}",
                     f"  command = {runner}",
                     f"  description = RUNTIME {target.name}",
                     "  restat = 1",

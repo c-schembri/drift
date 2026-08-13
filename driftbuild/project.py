@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import stat
 import sys
 import tomllib
 import urllib.parse
@@ -21,13 +22,16 @@ from driftbuild.model import (
     BenchmarkSpec,
     BuildConfig,
     BuildInput,
+    CommandGroupSpec,
     CommandSpec,
     CompileInterface,
     Dependency,
+    Deployment,
     FileSet,
     GitHubSpec,
     GitSource,
     LinkInterface,
+    MatrixSpec,
     MsbuildProject,
     PackageBuild,
     PackageLinkage,
@@ -39,6 +43,7 @@ from driftbuild.model import (
     ProjectSpec,
     ReleaseSpec,
     RemoteSpec,
+    RuntimeInput,
     TargetDependency,
     TargetKind,
     TargetRef,
@@ -47,6 +52,7 @@ from driftbuild.model import (
     TestSpec,
     VcpkgSource,
 )
+from driftbuild.runtime import module_command
 
 API_VERSION = 1
 SUPPORTED_API_VERSIONS = frozenset({0, API_VERSION})
@@ -74,6 +80,18 @@ def _inputs(values: FileSet | BuildInput | Sequence[BuildInput] | None) -> tuple
     return tuple(values)
 
 
+def _runtime_inputs(
+    values: FileSet | RuntimeInput | Sequence[RuntimeInput] | None,
+) -> tuple[RuntimeInput, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, FileSet):
+        return tuple(values.files)
+    if isinstance(values, (Path, Artifact, Deployment)):
+        return (values,)
+    return tuple(values)
+
+
 class ProjectApi:
     """Builds one immutable project declaration for a selected configuration."""
 
@@ -84,14 +102,17 @@ class ProjectApi:
         self._targets: dict[str, TargetSpec] = {}
         self._packages: dict[str, PackageSpec] = {}
         self._commands: list[CommandSpec] = []
+        self._command_groups: list[CommandGroupSpec] = []
         self._tasks: list[TaskSpec] = []
         self._pools: list[PoolSpec] = []
         self._tests: list[TestSpec] = []
+        self._matrices: list[MatrixSpec] = []
         self._benchmarks: list[BenchmarkSpec] = []
         self._artifacts: list[ArtifactSpec] = []
         self._releases: list[ReleaseSpec] = []
         self._remotes: list[RemoteSpec] = []
         self._github: GitHubSpec | None = None
+        self._discovery_directories: set[Path] = set()
 
     def files(self, *paths: str | os.PathLike[str]) -> FileSet:
         """Return explicit, validated repository-relative files."""
@@ -109,16 +130,30 @@ class ProjectApi:
         absolute_root = self.root / relative_root
         if not absolute_root.is_dir():
             raise ConfigurationError(f"Tree root is not a directory: {relative_root.as_posix()}")
+        for pattern in (*include, *exclude):
+            pattern_path = Path(pattern)
+            if pattern_path.is_absolute() or ".." in pattern_path.parts:
+                raise ConfigurationError(f"Tree pattern escapes its root: {pattern}")
+
+        for directory, names, _files in os.walk(absolute_root, followlinks=False):
+            current = Path(directory)
+            self._discovery_directories.add(current)
+            names[:] = [name for name in names if not (current / name).is_symlink()]
 
         found: dict[str, Path] = {}
         excluded: set[Path] = set()
+        root_part_count = len(self.root.parts)
         for pattern in exclude:
-            excluded.update(path.resolve() for path in absolute_root.glob(pattern))
+            excluded.update(absolute_root.glob(pattern))
         for pattern in include:
             for path in absolute_root.glob(pattern):
-                if path.is_symlink() or not path.is_file() or path.resolve() in excluded:
+                try:
+                    is_file = stat.S_ISREG(path.lstat().st_mode)
+                except OSError:
                     continue
-                relative = path.resolve().relative_to(self.root)
+                if path in excluded or not is_file:
+                    continue
+                relative = Path(*path.parts[root_part_count:])
                 key = relative.as_posix().casefold()
                 previous = found.get(key)
                 if previous is not None and previous != relative:
@@ -143,6 +178,7 @@ class ProjectApi:
         pool: str | None = None,
         timeout_seconds: float | None = None,
         restat: bool = False,
+        stamp_outputs: bool = False,
     ) -> ActionSpec:
         """Declare one custom command without executing it."""
         if deps not in (None, "gcc", "msvc"):
@@ -162,7 +198,202 @@ class ProjectApi:
             pool=pool,
             timeout_seconds=timeout_seconds,
             restat=restat,
+            stamp_outputs=stamp_outputs,
         )
+
+    def _cargo_action(
+        self,
+        name: str,
+        *,
+        manifest: str | os.PathLike[str],
+        workspace: bool = False,
+        packages: Sequence[str] = (),
+        targets: Sequence[str] = (),
+        features: Sequence[str] = (),
+        all_features: bool = False,
+        no_default_features: bool = False,
+        arguments: Sequence[str] = (),
+        environment: Mapping[str, str] | None = None,
+        outputs: Sequence[str | os.PathLike[str]] = (),
+        inputs: FileSet | BuildInput | Sequence[BuildInput] | None = None,
+        run_target: str | None = None,
+        target_directory: str | os.PathLike[str] | None = None,
+        artifact_kind: Literal["bin", "staticlib"] | None = None,
+        artifact_names: Sequence[str] = (),
+    ) -> ActionSpec:
+        manifest_path = _safe_relative(self.root, manifest, must_exist=True)
+        if manifest_path.name != "Cargo.toml":
+            raise ConfigurationError("Cargo manifests must be named Cargo.toml")
+        if workspace and packages:
+            raise ConfigurationError("Cargo targets cannot select both a workspace and packages")
+        if any(not value or value.startswith("-") for value in (*packages, *targets, *features)):
+            raise ConfigurationError("Cargo package, target, and feature names cannot be empty or options")
+
+        cargo_inputs = inputs
+        if cargo_inputs is None:
+            cargo_inputs = self.tree(
+                manifest_path.parent,
+                include=("**/*.rs", "**/Cargo.toml", "Cargo.lock", "**/build.rs", ".cargo/**/*.toml"),
+                exclude=("target/**/*", ".drift/**/*"),
+            )
+
+        cargo_target_directory = (
+            "{build}"
+            if target_directory is None
+            else str(self.root / _safe_relative(self.root, target_directory, must_exist=False))
+        )
+        selected_artifacts = tuple(artifact_names)
+        if not selected_artifacts and targets:
+            selected_artifacts = tuple(targets)
+            artifact_kind = artifact_kind or "bin"
+        if run_target is not None and not selected_artifacts:
+            selected_artifacts = (run_target,)
+            artifact_kind = "bin"
+        if selected_artifacts and artifact_kind is None:
+            artifact_kind = "bin"
+        if any(not value or value.startswith("-") for value in selected_artifacts):
+            raise ConfigurationError("Cargo artifact names cannot be empty or options")
+
+        declared_outputs = tuple(Path(value) for value in outputs)
+        if not declared_outputs and selected_artifacts:
+            if artifact_kind == "bin":
+                suffix = ".exe" if self.config.platform == "win32" else ""
+                declared_outputs = tuple(
+                    Path("cargo-artifacts") / name / f"{artifact}{suffix}" for artifact in selected_artifacts
+                )
+            else:
+                prefix = "" if self.config.platform == "win32" else "lib"
+                suffix = ".lib" if self.config.platform == "win32" else ".a"
+                declared_outputs = tuple(
+                    Path("cargo-artifacts") / name / f"{prefix}{artifact.replace('-', '_')}{suffix}"
+                    for artifact in selected_artifacts
+                )
+        if selected_artifacts and len(declared_outputs) != len(selected_artifacts):
+            raise ConfigurationError("Cargo artifact and output counts must match")
+
+        command = [
+            *module_command("driftbuild.cargo"),
+            "--manifest",
+            manifest_path.as_posix(),
+            "--target-dir",
+            cargo_target_directory,
+        ]
+        if self.config.build_type == "release":
+            command.append("--release")
+        if workspace:
+            command.append("--workspace")
+        for package in packages:
+            command.extend(("--package", package))
+        for target in targets:
+            command.extend(("--bin", target))
+        if features:
+            command.extend(("--features", ",".join(features)))
+        if all_features:
+            command.append("--all-features")
+        if no_default_features:
+            command.append("--no-default-features")
+        for index, artifact in enumerate(selected_artifacts):
+            command.extend(("--artifact", f"{artifact_kind}:{artifact}", "--output", f"{{out:{index}}}"))
+        if arguments:
+            command.append("--")
+            command.extend(str(value) for value in arguments)
+
+        stamp_outputs = not declared_outputs
+        if stamp_outputs:
+            declared_outputs = (Path("cargo-stamps") / f"{name}.stamp",)
+        action = self.command_action(
+            command,
+            outputs=declared_outputs,
+            inputs=cargo_inputs,
+            environment=environment,
+            description=f"CARGO {name}",
+            restat=True,
+            stamp_outputs=stamp_outputs,
+        )
+        return action
+
+    def cargo(self, name: str, **kwargs: Any) -> TargetRef:
+        """Declare a Cargo build owned and incrementally scheduled by Drift."""
+        run_target = kwargs.get("run_target")
+        if run_target is not None:
+            kwargs.setdefault("artifact_kind", "bin")
+        action = self._cargo_action(name, **kwargs)
+        if run_target is None:
+            return self.custom_target(name, action)
+        return self._target(
+            name,
+            "custom",
+            outputs=action.outputs,
+            action=action,
+            run_command=("{out}",),
+            run_environment=kwargs.get("environment"),
+        )
+
+    def cargo_static_library(
+        self,
+        name: str,
+        *,
+        include_dirs: Sequence[str | os.PathLike[str]] = (),
+        defines: Sequence[str] = (),
+        compile_arguments: Sequence[str] = (),
+        link_arguments: Sequence[str] = (),
+        runtime_files: FileSet | RuntimeInput | Sequence[RuntimeInput] | None = None,
+        artifact_name: str | None = None,
+        **kwargs: Any,
+    ) -> TargetRef:
+        """Declare a Cargo static library consumed by native Drift targets."""
+        arguments = tuple(kwargs.pop("arguments", ()))
+        if "--lib" not in arguments:
+            arguments = (*arguments, "--lib")
+        action = self._cargo_action(
+            name,
+            artifact_kind="staticlib",
+            artifact_names=(artifact_name or name,),
+            arguments=arguments,
+            **kwargs,
+        )
+        return self.external_library(
+            name,
+            action,
+            include_dirs=include_dirs,
+            defines=defines,
+            compile_arguments=compile_arguments,
+            link_arguments=link_arguments,
+            runtime_files=runtime_files,
+        )
+
+    def cargo_workspace(
+        self,
+        name: str,
+        *,
+        manifest: str | os.PathLike[str],
+        checks: Sequence[str] = ("format", "check", "clippy", "test"),
+        timeout_seconds: float | None = None,
+    ) -> tuple[TestSpec, ...]:
+        """Register the conventional validation commands for one Cargo workspace."""
+        manifest_path = _safe_relative(self.root, manifest, must_exist=True)
+        supported = {"format", "check", "clippy", "test"}
+        unknown = set(checks) - supported
+        if unknown:
+            raise ConfigurationError(f"Unknown Cargo workspace checks: {', '.join(sorted(unknown))}")
+        commands = {
+            "format": ("cargo", "fmt", "--manifest-path", manifest_path.as_posix(), "--all", "--", "--check"),
+            "check": ("cargo", "check", "--manifest-path", manifest_path.as_posix(), "--workspace", "--all-targets"),
+            "clippy": ("cargo", "clippy", "--manifest-path", manifest_path.as_posix(), "--workspace", "--all-targets"),
+            "test": ("cargo", "test", "--manifest-path", manifest_path.as_posix(), "--workspace", "--all-targets"),
+        }
+        declared = []
+        for check in checks:
+            test_name = name if check == "test" else f"{name}-{check}"
+            spec = TestSpec(
+                test_name,
+                commands[check],
+                labels=("rust", name),
+                timeout_seconds=timeout_seconds,
+            )
+            self.test(spec)
+            declared.append(spec)
+        return tuple(declared)
 
     def dependency(
         self,
@@ -174,7 +405,7 @@ class ProjectApi:
         libraries: Sequence[str | os.PathLike[str]] = (),
         library_dirs: Sequence[str | os.PathLike[str]] = (),
         link_arguments: Sequence[str] = (),
-        runtime_files: Sequence[str | os.PathLike[str]] = (),
+        runtime_files: FileSet | RuntimeInput | Sequence[RuntimeInput] | None = None,
     ) -> Dependency:
         """Declare a prebuilt or interface-only dependency."""
         return Dependency(
@@ -189,7 +420,7 @@ class ProjectApi:
                 library_dirs=tuple(Path(value) for value in library_dirs),
                 arguments=tuple(link_arguments),
             ),
-            runtime_files=tuple(Path(value) for value in runtime_files),
+            runtime_files=_runtime_inputs(runtime_files),
         )
 
     prebuilt_library = dependency
@@ -374,10 +605,13 @@ class ProjectApi:
         link_arguments: Sequence[str] = (),
         dependencies: Sequence[Dependency | TargetDependency] = (),
         objects: Sequence[TargetRef] = (),
-        runtime_files: FileSet | BuildInput | Sequence[BuildInput] | None = None,
+        runtime_files: FileSet | RuntimeInput | Sequence[RuntimeInput] | None = None,
         outputs: Sequence[str | os.PathLike[str]] = (),
         action: ActionSpec | None = None,
         precompiled_header: str | os.PathLike[str] | None = None,
+        run_command: Sequence[str] = (),
+        run_environment: Mapping[str, str] | None = None,
+        run_working_directory: str | os.PathLike[str] | None = None,
     ) -> TargetRef:
         if not name or any(character.isspace() for character in name):
             raise ConfigurationError(f"Invalid target name: {name!r}")
@@ -395,12 +629,19 @@ class ProjectApi:
             link_arguments=tuple(link_arguments),
             dependencies=tuple(dependencies),
             objects=tuple(objects),
-            runtime_files=_inputs(runtime_files),
+            runtime_files=_runtime_inputs(runtime_files),
             outputs=tuple(Path(value) for value in outputs),
             action=action,
             precompiled_header=(
                 _safe_relative(self.root, precompiled_header, must_exist=True)
                 if precompiled_header is not None
+                else None
+            ),
+            run_command=tuple(str(value) for value in run_command),
+            run_environment=dict(run_environment or {}),
+            run_working_directory=(
+                _safe_relative(self.root, run_working_directory, must_exist=True)
+                if run_working_directory is not None
                 else None
             ),
         )
@@ -431,7 +672,7 @@ class ProjectApi:
         defines: Sequence[str] = (),
         compile_arguments: Sequence[str] = (),
         link_arguments: Sequence[str] = (),
-        runtime_files: FileSet | BuildInput | Sequence[BuildInput] | None = None,
+        runtime_files: FileSet | RuntimeInput | Sequence[RuntimeInput] | None = None,
     ) -> TargetRef:
         """Declare a library produced by an explicit external build action."""
         return self._target(
@@ -449,7 +690,7 @@ class ProjectApi:
     def runtime_bundle(
         self,
         name: str,
-        files: FileSet | BuildInput | Sequence[BuildInput],
+        files: FileSet | RuntimeInput | Sequence[RuntimeInput],
         *,
         destination: str | os.PathLike[str] = ".",
     ) -> TargetRef:
@@ -460,13 +701,41 @@ class ProjectApi:
             outputs=(Path(destination) / f".{name}.stamp",),
         )
 
+    def deploy(
+        self,
+        source: str | os.PathLike[str] | Artifact,
+        destination: str | os.PathLike[str],
+    ) -> Deployment:
+        """Map one runtime input to a relative path inside a runtime bundle."""
+        resolved_source: BuildInput = (
+            source
+            if isinstance(source, Artifact)
+            else Path(source).resolve()
+            if Path(source).is_absolute() and Path(source).is_file()
+            else _safe_relative(self.root, source, must_exist=True)
+        )
+        target = Path(destination)
+        if target.is_absolute() or ".." in target.parts or target in (Path(""), Path(".")):
+            raise ConfigurationError(f"Runtime destination must be a relative file path: {target}")
+        return Deployment(resolved_source, target)
+
     def alias(self, name: str, targets: Sequence[TargetRef]) -> TargetRef:
         return self._target(name, "alias", objects=targets)
 
     def command(self, spec: CommandSpec) -> None:
+        if not spec.path or any(not part or any(character.isspace() for character in part) for part in spec.path):
+            raise ConfigurationError("Command paths require non-empty words")
         if any(existing.path == spec.path for existing in self._commands):
             raise ConfigurationError(f"Duplicate command path: {' '.join(spec.path)}")
         self._commands.append(spec)
+
+    def command_group(self, spec: CommandGroupSpec) -> None:
+        """Register a documented branch in the provider command tree."""
+        if not spec.path or any(not part or any(character.isspace() for character in part) for part in spec.path):
+            raise ConfigurationError("Command group paths require non-empty words")
+        if any(existing.path == spec.path for existing in self._command_groups):
+            raise ConfigurationError(f"Duplicate command group path: {' '.join(spec.path)}")
+        self._command_groups.append(spec)
 
     def task(self, spec: TaskSpec) -> None:
         if any(existing.name == spec.name for existing in self._tasks):
@@ -484,6 +753,18 @@ class ProjectApi:
         if any(existing.name == spec.name for existing in self._tests):
             raise ConfigurationError(f"Duplicate test: {spec.name}")
         self._tests.append(spec)
+
+    def matrix(self, spec: MatrixSpec) -> None:
+        """Register a named Cartesian configuration matrix."""
+        if any(existing.name == spec.name for existing in self._matrices):
+            raise ConfigurationError(f"Duplicate matrix: {spec.name}")
+        if not spec.axes or any(not name or not values for name, values in spec.axes):
+            raise ConfigurationError("Matrices require non-empty axes and values")
+        if len({name for name, _values in spec.axes}) != len(spec.axes):
+            raise ConfigurationError("Matrix axis names must be unique")
+        if spec.operation not in ("build", "test"):
+            raise ConfigurationError(f"Unsupported matrix operation: {spec.operation}")
+        self._matrices.append(spec)
 
     def benchmark(self, spec: BenchmarkSpec) -> None:
         """Register a benchmark invocation."""
@@ -522,14 +803,17 @@ class ProjectApi:
             defaults=tuple(defaults),
             packages=tuple(self._packages.values()),
             commands=tuple(self._commands),
+            command_groups=tuple(self._command_groups),
             tasks=tuple(self._tasks),
             pools=tuple(self._pools),
             tests=tuple(self._tests),
+            matrices=tuple(self._matrices),
             benchmarks=tuple(self._benchmarks),
             artifacts=tuple(self._artifacts),
             releases=tuple(self._releases),
             remotes=tuple(self._remotes),
             github=self._github,
+            discovery_directories=tuple(sorted(self._discovery_directories, key=lambda path: path.as_posix())),
         )
 
 
@@ -544,6 +828,9 @@ def project_root_find(start: Path) -> Path:
 
 def project_load(root: Path, config: BuildConfig) -> ProjectSpec:
     """Load and evaluate the configured project provider."""
+    from driftbuild.version_requirement import project_requirement_validate
+
+    project_requirement_validate(root)
     manifest_path = root / "drift.toml"
     try:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))

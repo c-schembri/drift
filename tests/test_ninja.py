@@ -5,7 +5,7 @@ import pytest
 
 from driftbuild.api import ActionSpec, BuildConfig, PoolSpec, ProjectApi, ProjectSpec, TargetRef
 from driftbuild.errors import ConfigurationError
-from driftbuild.model import TargetDependency, TargetSpec
+from driftbuild.model import Dependency, Deployment, TargetDependency, TargetSpec
 from driftbuild.ninja import generate
 from driftbuild.toolchain import Toolchain
 
@@ -65,6 +65,8 @@ def test_msvc_shared_library_emits_runtime_and_import_library(tmp_path: Path) ->
     assert "/IMPLIB:" in ninja
     assert "rspfile = $response_file" in ninja
     assert "rspfile_content = $in $link_arguments" in ninja
+    assert "rule link\n  command = $tool_command" in ninja
+    assert "description = LINK $out\n  restat = 1" in ninja
     assert "sample-link.rsp" in ninja
 
 
@@ -173,6 +175,23 @@ def test_executable_stages_transitive_runtime_and_sets_loader_path(tmp_path: Pat
     assert "description = RUNTIME app" in ninja
     assert runtime.name in ninja
     assert "runtime/app.stamp" in ninja.replace("$:", ":").replace("\\", "/")
+
+
+def test_executable_preserves_deployed_runtime_subdirectories(tmp_path: Path) -> None:
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    runtime = tmp_path / "sample.dll"
+    runtime.write_bytes(b"shared")
+    dependency = Dependency("sample", runtime_files=(Deployment(runtime, Path("plugins/sample.dll")),))
+    app = TargetSpec("app", "executable", sources=(Path("main.c"),), dependencies=(dependency,))
+    project = ProjectSpec("fixture", (app,), (TargetRef("app"),))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    generated = generate(project, tmp_path, tmp_path / ".drift", BuildConfig("win32", compiler="msvc"), toolchain)
+    ninja = generated.ninja_file.read_text(encoding="utf-8").replace("$:", ":").replace("\\", "/")
+    runtime_spec = json.loads((tmp_path / ".drift/actions/app-runtime.json").read_text(encoding="utf-8"))
+
+    assert "description = RUNTIME app" in ninja
+    assert runtime_spec["entries"][0]["destination"] == "plugins/sample.dll"
 
 
 def test_component_alias_propagates_each_library_interface(tmp_path: Path) -> None:

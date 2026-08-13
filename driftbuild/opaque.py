@@ -107,6 +107,7 @@ def project_import(
         environment["CXXFLAGS"] = f"--sysroot={config.sysroot}"
     interface = _interface(source_root, install_root, package, config)
     produced = tuple(value for value in interface.link.libraries if isinstance(value, Path))
+    runtime_outputs = tuple(value for value in interface.runtime_files if isinstance(value, Path))
     action = ActionSpec(
         command=(
             *module_command("driftbuild.opaque"),
@@ -122,7 +123,7 @@ def project_import(
             str(install_root),
             *(value for option in package.options for value in ("--option", f"{option[0]}={option[1]}")),
         ),
-        outputs=(*produced, *interface.runtime_files, stamp),
+        outputs=(*produced, *runtime_outputs, stamp),
         environment=environment,
         description=f"{adapter.upper()} {package.name}",
         pool="console",

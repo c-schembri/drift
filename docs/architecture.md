@@ -4,7 +4,8 @@ Drift separates project policy from execution in seven stages:
 
 1. `drift.toml` selects a supported API version and a typed Python provider. API v1 is stable; v0 remains a migration
    compatibility surface.
-2. `ProjectApi` records immutable dataclasses. Provider evaluation must not compile, download, or mutate the source tree.
+2. The manifest's optional `requires-drift` constraint is validated before `ProjectApi` records immutable dataclasses.
+   Provider evaluation must not compile, download, or mutate the source tree.
 3. `drift.lock` fixes scoped external source identities and verified content digests without executing build adapters.
 4. Locked package projects and their transitive Drift packages are loaded from the content-addressed store and composed
    under collision-proof target names.
@@ -19,7 +20,9 @@ under `DRIFT_HOME/tools`; shared package builds live under `DRIFT_HOME/binaries`
 when `DRIFT_HOME` is unset. Configuration directories are keyed by platform, target, architecture, compiler, build type,
 sysroot, toolchain, and provider values. File discovery is sorted, root-confined,
 excludes symlinks, and rejects case collisions. Generated files are replaced only when their bytes change, preserving
-no-op performance.
+no-op performance. A configured build records provider inputs, the directory structure observed by `api.tree()`, the
+toolchain environment delta, and generated output phases. As long as those inputs remain current, later builds execute
+the cached Ninja graph directly; changing provider code or adding or removing a discovered file forces graph evaluation.
 
 Shared cache deletion is never implicit. `drift cache status` measures each ownership category, while cleanup requires
 both an explicit category and `--yes`; every deletion target is checked as a strict child of `DRIFT_HOME`.
@@ -37,7 +40,7 @@ provenance attestations; the native self-updater replaces versioned installation
 
 ## Boundaries
 
-The build graph owns source/header selection, compile and link interfaces, object/static/shared/executable targets, custom actions, external libraries, aliases, runtime bundles, and locked package target references. The workflow graph separately owns operational tasks. Tests, benchmarks, artifacts, releases, GitHub, and remotes are typed services referencing those declarations.
+The build graph owns source/header selection, compile and link interfaces, object/static/shared/executable targets, custom actions, external libraries, aliases, destination-preserving runtime deployments, and locked package target references. Cargo artifact messages are translated into stable build outputs rather than exposing Cargo target-directory layouts to consumers. The workflow graph separately owns operational tasks. Tests, configuration matrices, benchmarks, artifacts, releases, GitHub, and remotes are typed services referencing those declarations.
 
 Drift's native source package layer intentionally has no registry or version solver. A package must be pinned to an exact
 Git commit or archive digest and expose a native Drift project, a recognized upstream build description, or a trusted

@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
-from driftbuild.model import Artifact, PackageTargetRef, ProjectSpec, TargetDependency, TargetSpec
+from driftbuild.model import (
+    Artifact,
+    Dependency,
+    Deployment,
+    PackageTargetRef,
+    ProjectSpec,
+    TargetDependency,
+    TargetSpec,
+)
 
 
 def target_map(project: ProjectSpec) -> dict[str, TargetSpec]:
@@ -27,8 +36,18 @@ def _target_edges(target: TargetSpec) -> set[str]:
     }
     edges.update(item.name for item in target.objects)
     for value in (*target.sources, *target.runtime_files):
+        if isinstance(value, Deployment):
+            value = value.source
         if isinstance(value, Artifact):
             edges.add(value.target.name)
+    for dependency in target.dependencies:
+        if not isinstance(dependency, Dependency):
+            continue
+        for value in dependency.runtime_files:
+            if isinstance(value, Deployment):
+                value = value.source
+            if isinstance(value, Artifact):
+                edges.add(value.target.name)
     if target.action is not None:
         for value in (*target.action.inputs, *target.action.implicit_inputs, *target.action.order_only):
             if isinstance(value, Artifact):
@@ -73,7 +92,20 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
     outputs: dict[str, str] = {}
     graph: dict[str, set[str]] = {}
 
+    def deployment_validate(value: object) -> None:
+        if not isinstance(value, Deployment):
+            return
+        destination = value.destination
+        if destination.is_absolute() or ".." in destination.parts or destination in (Path(""), Path(".")):
+            raise ConfigurationError(f"Runtime destination must be a relative file path: {destination}")
+
     for target in project.targets:
+        for value in target.runtime_files:
+            deployment_validate(value)
+        for dependency in target.dependencies:
+            if isinstance(dependency, Dependency):
+                for value in dependency.runtime_files:
+                    deployment_validate(value)
         if target.kind in ("custom", "external_library") and target.action is None:
             raise ConfigurationError(f"Target {target.name} requires an action")
         if target.action is not None and tuple(target.outputs) != tuple(target.action.outputs):
@@ -132,6 +164,12 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
         unknown = sorted(reference.name for reference in test.build_targets if reference.name not in targets)
         if unknown:
             raise ConfigurationError(f"Test {test.name} references unknown targets: {', '.join(unknown)}")
+    test_names = {test.name for test in project.tests}
+    for matrix in project.matrices:
+        available = targets if matrix.operation == "build" else test_names
+        unknown = sorted(set(matrix.targets) - set(available))
+        if unknown:
+            raise ConfigurationError(f"Matrix {matrix.name} references unknown {matrix.operation} targets: {', '.join(unknown)}")
     for benchmark in project.benchmarks:
         unknown = sorted(reference.name for reference in benchmark.build_targets if reference.name not in targets)
         if unknown:

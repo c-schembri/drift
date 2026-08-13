@@ -152,6 +152,17 @@ BuildInput: TypeAlias = Path | Artifact
 
 
 @dataclass(frozen=True)
+class Deployment:
+    """One runtime input staged at a destination relative to its bundle root."""
+
+    source: BuildInput
+    destination: Path
+
+
+RuntimeInput: TypeAlias = BuildInput | Deployment
+
+
+@dataclass(frozen=True)
 class CompileInterface:
     """Compile requirements contributed by a dependency."""
 
@@ -176,7 +187,7 @@ class Dependency:
     name: str
     compile: CompileInterface = CompileInterface()
     link: LinkInterface = LinkInterface()
-    runtime_files: tuple[Path, ...] = ()
+    runtime_files: tuple[RuntimeInput, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -203,6 +214,7 @@ class ActionSpec:
     pool: str | None = None
     timeout_seconds: float | None = None
     restat: bool = False
+    stamp_outputs: bool = False
 
 
 @dataclass(frozen=True)
@@ -220,10 +232,13 @@ class TargetSpec:
     link_arguments: tuple[str, ...] = ()
     dependencies: tuple[Dependency | TargetDependency, ...] = ()
     objects: tuple[TargetRef, ...] = ()
-    runtime_files: tuple[BuildInput, ...] = ()
+    runtime_files: tuple[RuntimeInput, ...] = ()
     outputs: tuple[Path, ...] = ()
     action: ActionSpec | None = None
     precompiled_header: Path | None = None
+    run_command: tuple[str, ...] = ()
+    run_environment: Mapping[str, str] = field(default_factory=dict)
+    run_working_directory: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -262,6 +277,15 @@ class CommandSpec:
     handler: Callable[..., Any]
     options: tuple[OptionSpec, ...] = ()
     options_type: type[Any] | None = None
+    passthrough: bool = False
+
+
+@dataclass(frozen=True)
+class CommandGroupSpec:
+    """Named branch in a provider command tree."""
+
+    path: tuple[str, ...]
+    help: str
 
 
 @dataclass(frozen=True)
@@ -297,6 +321,17 @@ class TestSpec:
     environment: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float | None = None
     working_directory: Path | None = None
+    isolated: bool = False
+
+
+@dataclass(frozen=True)
+class MatrixSpec:
+    """Cartesian set of Drift configurations for one build or test operation."""
+
+    name: str
+    axes: tuple[tuple[str, tuple[str, ...]], ...]
+    operation: Literal["build", "test"] = "build"
+    targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -361,14 +396,17 @@ class ProjectSpec:
     defaults: tuple[TargetRef, ...] = ()
     packages: tuple[PackageSpec, ...] = ()
     commands: tuple[CommandSpec, ...] = ()
+    command_groups: tuple[CommandGroupSpec, ...] = ()
     tasks: tuple[TaskSpec, ...] = ()
     pools: tuple[PoolSpec, ...] = ()
     tests: tuple[TestSpec, ...] = ()
+    matrices: tuple[MatrixSpec, ...] = ()
     benchmarks: tuple[BenchmarkSpec, ...] = ()
     artifacts: tuple[ArtifactSpec, ...] = ()
     releases: tuple[ReleaseSpec, ...] = ()
     remotes: tuple[RemoteSpec, ...] = ()
     github: GitHubSpec | None = None
+    discovery_directories: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)

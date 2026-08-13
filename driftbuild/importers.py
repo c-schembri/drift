@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from driftbuild.bootstrap import CMAKE_VERSION, CONAN_VERSION, MESON_VERSION
 from driftbuild.errors import ConfigurationError
 from driftbuild.model import BuildConfig, MsbuildProject, PackageSpec, ProjectSpec, VcpkgSource
+from driftbuild.versions import CMAKE_VERSION, CONAN_VERSION, MESON_VERSION
 
 
 def adapter_detect(source_root: Path, package: PackageSpec, platform: str) -> str:

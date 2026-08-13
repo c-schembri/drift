@@ -21,14 +21,18 @@ def executable_select(project: ProjectSpec, requested: str | None = None) -> Tar
         target = targets.get(requested)
         if target is None:
             raise ExecutionError(f"Unknown target: {requested}")
-        if target.kind != "executable":
+        if target.kind != "executable" and not target.run_command:
             raise ExecutionError(f"Target is not executable: {requested}")
         return target
 
     default_names = transitive_targets(targets, (reference.name for reference in project.defaults))
-    candidates = [target for target in project.targets if target.kind == "executable" and target.name in default_names]
+    candidates = [
+        target
+        for target in project.targets
+        if (target.kind == "executable" or target.run_command) and target.name in default_names
+    ]
     if not candidates:
-        candidates = [target for target in project.targets if target.kind == "executable"]
+        candidates = [target for target in project.targets if target.kind == "executable" or target.run_command]
     if not candidates:
         raise ExecutionError("Project has no executable targets")
     if len(candidates) > 1:
@@ -50,6 +54,31 @@ def build_and_run(
     result = build(project, root, state_root, config, (target.name,))
     assert result.timing is not None
     print(build_timing_render(result.timing), flush=True)
+    if target.run_command:
+        target_outputs = result.generated.outputs[target.name]
+
+        def expand(value: str) -> str:
+            if value == "{root}":
+                return str(root)
+            if value == "{build}":
+                return str(result.generated.ninja_file.parent)
+            if value == "{out}":
+                if not target_outputs:
+                    raise ExecutionError(f"Runnable target {target.name} has no output")
+                return str(target_outputs[0].resolve())
+            if value.startswith("{out:") and value.endswith("}"):
+                try:
+                    return str(target_outputs[int(value[5:-1])].resolve())
+                except (IndexError, ValueError) as error:
+                    raise ExecutionError(f"Runnable target {target.name} has invalid output placeholder {value}") from error
+            return value
+
+        command = tuple(expand(value) for value in target.run_command)
+        environment = dict(os.environ)
+        environment.update(target.run_environment)
+        working_directory = root / target.run_working_directory if target.run_working_directory else root
+        completed = run((*command, *arguments), cwd=working_directory, environment=environment, check=False)
+        return completed.returncode
     outputs = result.generated.outputs[target.name]
     if not outputs:
         raise ExecutionError(f"Executable target has no output: {target.name}")

@@ -50,6 +50,14 @@ def test_build_timing_render_includes_wall_and_job_times() -> None:
     )
 
 
+def test_build_timing_render_includes_project_evaluation() -> None:
+    timing = BuildTiming(0.7, 0.02, 0.45, (), project_seconds=0.2)
+
+    assert build_timing_render(timing) == (
+        "Build timing: total 0.700s | project 0.200s | configure 0.020s | ninja 0.450s | no work"
+    )
+
+
 def test_build_timing_render_labels_dry_runs() -> None:
     timing = BuildTiming(0.1, 0.02, 0.08, (), dry_run=True)
 

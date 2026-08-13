@@ -9,7 +9,7 @@ from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate, transitive_targets
-from driftbuild.model import Artifact, ProjectSpec, TargetSpec
+from driftbuild.model import Artifact, Deployment, ProjectSpec, TargetSpec
 
 
 def _copy(source: Path, destination: Path, installed: list[dict[str, str]]) -> None:
@@ -69,11 +69,15 @@ def project_install(
                 relative = relative_path.as_posix()
                 _copy(source, prefix / "include" / relative, installed)
         for runtime in target.runtime_files:
+            destination = None
+            if isinstance(runtime, Deployment):
+                destination = runtime.destination
+                runtime = runtime.source
             if isinstance(runtime, Artifact):
                 continue
             source = runtime if runtime.is_absolute() else root / runtime
             if source.is_file():
-                _copy(source, prefix / "bin" / source.name, installed)
+                _copy(source, prefix / "bin" / (destination or Path(source.name)), installed)
         if target.kind in ("static_library", "shared_library"):
             pc = prefix / "lib" / "pkgconfig" / f"{target.name}.pc"
             pc.parent.mkdir(parents=True, exist_ok=True)
