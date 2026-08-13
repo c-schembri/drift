@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import time
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from driftbuild.errors import ConfigurationError
 
 def _try_lock(handle: BinaryIO) -> bool:
     if os.name == "nt":
-        import msvcrt
+        msvcrt = importlib.import_module("msvcrt")
 
         try:
             handle.seek(0)
@@ -22,10 +23,10 @@ def _try_lock(handle: BinaryIO) -> bool:
             return True
         except OSError:
             return False
-    import fcntl
+    fcntl = importlib.import_module("fcntl")
 
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
     except BlockingIOError:
         return False
@@ -33,14 +34,14 @@ def _try_lock(handle: BinaryIO) -> bool:
 
 def _unlock(handle: BinaryIO) -> None:
     if os.name == "nt":
-        import msvcrt
+        msvcrt = importlib.import_module("msvcrt")
 
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         return
-    import fcntl
+    fcntl = importlib.import_module("fcntl")
 
-    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager
