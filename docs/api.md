@@ -129,7 +129,7 @@ configuration cache.
 
 ## Project requirement
 
-Set `requires-drift = "==0.3.0"` in the manifest's `[project]` table to pin a project to one Drift release. Every
+Set `requires-drift = "==0.3.1"` in the manifest's `[project]` table to pin a project to one Drift release. Every
 provider-loading command validates the constraint. `drift bootstrap` checks it without loading the provider, and
 `drift bootstrap --install` installs an exact pinned release through Drift's verified self-updater.
 

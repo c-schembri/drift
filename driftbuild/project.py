@@ -1040,6 +1040,6 @@ def project_provider_files(root: Path) -> tuple[Path, ...]:
             path.relative_to(root)
         except ValueError:
             continue
-        if path.suffix in (".py", ".toml"):
+        if path.is_file() and path.suffix in (".py", ".toml"):
             files.add(path)
     return tuple(sorted(files, key=lambda path: path.as_posix()))

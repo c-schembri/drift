@@ -1,13 +1,27 @@
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from driftbuild.api import API_VERSION, BuildConfig, CommandGroupSpec, Deployment, MatrixSpec, ProjectApi
 from driftbuild.errors import ConfigurationError
+from driftbuild.project import project_provider_files
 
 
 def api_for(root: Path) -> ProjectApi:
     return ProjectApi(root, BuildConfig("test"))
+
+
+def test_provider_files_ignore_frozen_runtime_pseudo_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manifest = tmp_path / "drift.toml"
+    manifest.write_text("[project]\n", encoding="utf-8")
+    module = ModuleType("pyinstaller_pseudo_module")
+    module.__file__ = "pyimod01_archive.py"
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.chdir(tmp_path)
+
+    assert project_provider_files(tmp_path) == (manifest,)
 
 
 def test_files_and_tree_are_root_confined_and_sorted(tmp_path: Path) -> None:
