@@ -24,7 +24,7 @@ def command_render(arguments: Sequence[str], secrets: Sequence[str] = ()) -> str
 
 @dataclass(frozen=True)
 class ProcessResult:
-    """Captured process result."""
+    """Process result, including streams when capture was requested."""
 
     arguments: tuple[str, ...]
     returncode: int
@@ -109,7 +109,7 @@ def run(
     capture: bool = False,
     check: bool = True,
 ) -> ProcessResult:
-    """Run one bounded process and return a stable result."""
+    """Run one bounded process, inheriting output unless capture is requested."""
     try:
         completed = subprocess.run(
             list(arguments),

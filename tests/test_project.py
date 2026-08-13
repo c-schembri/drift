@@ -90,6 +90,7 @@ def test_cargo_declares_workspace_build_with_discovered_inputs(tmp_path: Path) -
     assert spec.action.stamp_outputs is True
     assert spec.action.inputs == (Path("Server/Cargo.toml"), Path("Server/Cargo.lock"))
     assert spec.action.depfile == Path("cargo-deps/server.d")
+    assert spec.action.pool == "console"
 
 
 def test_cargo_rejects_workspace_and_package_selection(tmp_path: Path) -> None:

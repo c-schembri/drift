@@ -131,7 +131,7 @@ def _configure(
             arguments.append(f"-DCMAKE_SYSROOT={config.sysroot}")
         if config.toolchain_file is not None and config.toolchain_file.suffix.casefold() == ".cmake":
             arguments.append(f"-DCMAKE_TOOLCHAIN_FILE={config.toolchain_file}")
-        run(arguments, cwd=source_root, environment=environment, capture=True)
+        run(arguments, cwd=source_root, environment=environment)
         temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(fingerprint, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary, state_path)

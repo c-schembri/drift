@@ -20,7 +20,7 @@ layout: Drift detects the appropriate adapter, imports its compile and link inte
 The native Drift release does not require Python, uv, Ninja, CMake, or Meson to be installed. Drift ships as a native
 application and downloads each pinned build tool only when the active graph needs it.
 
-> Drift 0.3 is experimental. Provider API v1 is stable within the 0.3 release line, but the wider command and package
+> Drift 0.4 is experimental. Provider API v1 is stable within the 0.4 release line, but the wider command and package
 > surface is still evolving.
 
 ## Why Drift?
@@ -29,6 +29,8 @@ application and downloads each pinned build tool only when the active graph need
   the same typed declaration.
 - **Fast local builds.** Ninja owns scheduling and incremental execution. Drift avoids reevaluating unchanged providers
   on the no-op path.
+- **One terminal.** Ninja, Cargo, upstream build systems, and package managers stream their output through Drift while
+  they work; only machine-readable probes are captured.
 - **Small project files.** Declare the library you want rather than reproducing its upstream build machinery.
 - **Reproducible dependencies.** Git commits, archive hashes, vcpkg baselines, tool versions, options, patches, and
   exported components are captured in `drift.lock`.
@@ -59,7 +61,7 @@ export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/drift/bin:$PATH"
 drift --version
 ```
 
-Add that export to your shell profile. Set `DRIFT_VERSION=0.4.1` when running either installer to select an exact
+Add that export to your shell profile. Set `DRIFT_VERSION=0.4.2` when running either installer to select an exact
 release. Native archives are currently published for Windows x86_64, Linux x86_64, and macOS arm64.
 
 Once installed, Drift updates itself without Python or uv:
@@ -86,7 +88,7 @@ hello/
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.4.1"
+requires-drift = "==0.4.2"
 ```
 
 `build.py` declares the graph through the supported `driftbuild.api` surface:
@@ -329,7 +331,7 @@ Projects can require an exact Drift release in `drift.toml`:
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.4.1"
+requires-drift = "==0.4.2"
 ```
 
 ```console

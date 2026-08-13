@@ -95,7 +95,7 @@ def _configure(
         environment["CFLAGS"] = "-O2 -DNDEBUG"
         environment["CXXFLAGS"] = "-O2 -DNDEBUG"
     build_root.mkdir(parents=True, exist_ok=True)
-    run(arguments, cwd=build_root, environment=environment, capture=True)
+    run(arguments, cwd=build_root, environment=environment)
     temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(fingerprint, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, state_path)

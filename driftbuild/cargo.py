@@ -133,14 +133,13 @@ def main() -> int:
     ]
     metadata = subprocess.run(
         metadata_command,
-        capture_output=True,
+        stdout=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
         check=False,
     )
     if metadata.returncode != 0:
-        print(metadata.stderr, end="", file=sys.stderr)
         return metadata.returncode
     try:
         metadata_payload: object = json.loads(metadata.stdout)

@@ -527,6 +527,7 @@ class ProjectApi:
             inputs=cargo_inputs,
             environment=environment,
             description=f"CARGO {name}",
+            pool="console",
             restat=True,
             stamp_outputs=stamp_outputs,
             depfile=Path("cargo-deps") / f"{name}.d",

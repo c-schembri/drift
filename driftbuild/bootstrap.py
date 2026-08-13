@@ -420,7 +420,6 @@ def conan_resolve(_state_root: Path, override: str | None = None) -> Path:
                 "--only-binary=:all:",
                 *_CONAN_PACKAGES,
             ),
-            capture=True,
             timeout_seconds=300,
         )
         marker.write_text(_CONAN_INSTALL_MARKER + "\n", encoding="ascii")
@@ -468,7 +467,6 @@ def _conan_frozen_resolve() -> Path:
                 str(packages),
                 *_CONAN_PACKAGES,
             ),
-            capture=True,
             timeout_seconds=300,
         )
         if os.name == "nt":

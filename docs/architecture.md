@@ -63,3 +63,6 @@ generated `configure` script are installed into a private prefix behind one expl
 once, then their packaged C/C++ interface is deployed into project state. pkg-config is an explicit provider API for
 host-installed interfaces. Visual Studio generation emits Makefile-style projects backed by Drift and Ninja rather than
 a second MSBuild backend. Remote execution never occurs implicitly during a local build.
+
+External build work inherits Drift's stdout and stderr and uses Ninja's console pool when output must remain live. Drift
+captures output only for machine-readable probes and intentionally buffered test reporting.

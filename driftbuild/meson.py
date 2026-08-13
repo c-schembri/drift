@@ -122,7 +122,7 @@ def _configure(
             encoding="utf-8",
         )
         arguments.extend(("--cross-file", str(cross_file)))
-    run(arguments, cwd=source_root, environment=environment, capture=True)
+    run(arguments, cwd=source_root, environment=environment)
     temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
     temporary.write_text(json.dumps(fingerprint, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, state_path)

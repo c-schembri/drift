@@ -58,7 +58,7 @@ def _environment(state_root: Path, config: BuildConfig) -> tuple[dict[str, str],
 def _profile_ensure(conan: Path, environment: dict[str, str]) -> None:
     profile = Path(environment["CONAN_HOME"]) / "profiles" / "default"
     if not profile.is_file():
-        run((str(conan), "profile", "detect", "--force"), environment=environment, capture=True)
+        run((str(conan), "profile", "detect", "--force"), environment=environment)
 
 
 def _create_arguments(
@@ -134,7 +134,6 @@ def _create(
         ),
         cwd=source_root,
         environment=environment,
-        capture=True,
         timeout_seconds=1800,
     )
     temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
