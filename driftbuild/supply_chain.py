@@ -88,7 +88,8 @@ def audit_create(project: ProjectSpec, root: Path, output: Path) -> tuple[Path, 
     sbom_path = output / "sbom.cdx.json"
     licenses_path = output / "THIRD_PARTY_LICENSES.txt"
     sbom_path.write_text(json.dumps(sbom, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    licenses_path.write_text("\n".join(license_sections), encoding="utf-8")
+    license_report = "\n".join(license_sections) if license_sections else "No third-party packages are locked.\n"
+    licenses_path.write_text(license_report, encoding="utf-8")
     return sbom_path, licenses_path
 
 

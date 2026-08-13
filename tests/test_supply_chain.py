@@ -21,7 +21,7 @@ def test_audit_without_packages_is_deterministic(tmp_path: Path) -> None:
 
     assert first[0].read_bytes() == second[0].read_bytes()
     assert json.loads(first[0].read_text(encoding="utf-8"))["components"] == []
-    assert first[1].read_text(encoding="utf-8") == ""
+    assert first[1].read_text(encoding="utf-8") == "No third-party packages are locked.\n"
 
 
 def test_checksums_are_sorted_and_release_install_is_verified(tmp_path: Path) -> None:
