@@ -1,0 +1,73 @@
+name: Distribution
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: drift-windows-x86_64
+            executable: dist/drift/drift.exe
+          - os: ubuntu-latest
+            artifact: drift-linux-x86_64
+            executable: dist/drift/drift
+          - os: macos-latest
+            artifact: drift-macos-arm64
+            executable: dist/drift/drift
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --group dist
+      - name: Build native application directory
+        run: uv run --group dist pyinstaller --noconfirm --clean --onedir --name drift --collect-submodules driftbuild --collect-submodules mesonbuild --collect-submodules pip drift.py
+      - name: Smoke test executable
+        shell: bash
+        run: |
+          "${{ matrix.executable }}" --version
+          "${{ matrix.executable }}" build examples/native
+          "${{ matrix.executable }}" run examples/native
+          DRIFT_HOME="$RUNNER_TEMP/drift-native-home" "${{ matrix.executable }}" build examples/inih
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p package
+          cp -R dist/drift/. package/
+          cp README.md LICENSE package/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: package
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: native
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: Archive and checksum
+        run: |
+          for directory in artifacts/*; do
+            name=$(basename "$directory")
+            tar -czf "$name.tar.gz" -C "$directory" .
+          done
+          sha256sum drift-*.tar.gz > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            drift-*.tar.gz
+            SHA256SUMS

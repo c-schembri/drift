@@ -26,6 +26,11 @@ dev = [
   "pytest>=8.4,<9",
   "ruff>=0.12,<1",
 ]
+dist = [
+  "meson==1.12.0",
+  "pip>=25,<27",
+  "pyinstaller>=6.16,<7",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["driftbuild"]

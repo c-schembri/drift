@@ -8,7 +8,8 @@ def project(api: ProjectApi):
         "inih",
         source=api.git("https://github.com/benhoyt/inih.git", INIH_REVISION),
         adapter="meson",
-        options={"default_library": "static", "tests": False, "with_INIReader": False},
+        options={"tests": False, "with_INIReader": False},
+        linkage="static",
     )
     example = api.executable(
         "inih-example",

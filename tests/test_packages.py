@@ -79,6 +79,23 @@ def test_archive_package_locks_fetches_and_composes_targets(tmp_path: Path) -> N
     assert package_target.name in targets
 
 
+def test_refresh_repairs_corrupt_cached_source(tmp_path: Path) -> None:
+    archive = tmp_path / "answer.zip"
+    checksum = _archive_create(archive, {"answer-1/value.txt": "original\n"})
+    api = ProjectApi(tmp_path, BuildConfig(sys.platform))
+    api.package("answer", source=api.archive(str(archive), checksum, strip_prefix="answer-1"), adapter="prebuilt")
+    project = api.project("sample")
+    store = tmp_path / "store"
+    locked = package_lock_create(project, tmp_path, store)
+    source = store / "sources" / locked.packages[0].content_sha256
+    (source / "value.txt").write_text("corrupt\n", encoding="utf-8")
+
+    refreshed = package_lock_create(project, tmp_path, store, refresh=True)
+
+    assert refreshed.packages[0].content_sha256 == locked.packages[0].content_sha256
+    assert (source / "value.txt").read_text(encoding="utf-8") == "original\n"
+
+
 def test_changed_overlay_makes_lock_stale(tmp_path: Path) -> None:
     archive = tmp_path / "answer.zip"
     checksum = _archive_create(archive, {"answer-1/source.c": "int answer(void) { return 42; }\n"})

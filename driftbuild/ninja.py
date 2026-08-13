@@ -6,7 +6,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +22,7 @@ from driftbuild.model import (
     TargetRef,
     TargetSpec,
 )
+from driftbuild.runtime import module_command
 from driftbuild.toolchain import Toolchain
 
 
@@ -498,7 +498,7 @@ def generate(
             }
             spec_path = action_root / f"{target.name}.json"
             _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-            runner = _shell([sys.executable, "-m", "driftbuild.action", "--spec", str(spec_path)])
+            runner = _shell([*module_command("driftbuild.action"), "--spec", str(spec_path)])
             input_text = " ".join(_ninja(path) for path in inputs)
             implicit_inputs.append(spec_path)
             implicit_text = f" | {' '.join(_ninja(path) for path in implicit_inputs)}" if implicit_inputs else ""
@@ -528,7 +528,7 @@ def generate(
             }
             spec_path = action_root / f"{target.name}-bundle.json"
             _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-            runner = _shell([sys.executable, "-m", "driftbuild.bundle", "--spec", str(spec_path)])
+            runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
             lines += [
                 f"build {_ninja(output)}: action {' '.join(_ninja(path) for path in bundle_files)}",
                 f"  command = {runner}",

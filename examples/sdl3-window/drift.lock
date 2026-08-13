@@ -5,13 +5,24 @@
       "name": "sdl3",
       "overlay": null,
       "provenance": {
-        "adapter": "msbuild",
-        "adapter_version": "host",
+        "adapter_versions": {
+          "cmake": "3.31.6",
+          "msbuild": "host",
+          "prebuilt": "host"
+        },
+        "adapters": [
+          "cmake",
+          "msbuild",
+          "prebuilt"
+        ],
+        "components": [],
         "features": [],
+        "linkage": "auto",
         "options": {},
         "patches": []
       },
-      "request_sha256": "ab7004539b49b161d371acbc7dc098c051cb78a190f76e63f590cf350acc1790",
+      "request_sha256": "a6bbb782f0f3094e4a46a5b5f04e86aa4e3e67122d05d8a648a5d2dbb1fb794d",
+      "scope": "",
       "source": {
         "kind": "git",
         "revision": "8e37db5e797b6167f3a00d697d816a684bd259c7",
@@ -20,5 +31,5 @@
       }
     }
   ],
-  "version": 2
+  "version": 4
 }

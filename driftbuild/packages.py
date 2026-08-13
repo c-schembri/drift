@@ -147,6 +147,8 @@ def _request_sha256(package: PackageSpec, root: Path) -> str:
         "overlay_sha256": overlay_sha256,
         "options": package.options,
         "features": package.features,
+        "components": package.components,
+        "linkage": package.linkage,
         "patches": [
             {
                 "path": path.as_posix(),
@@ -422,9 +424,10 @@ def _source_materialize_unlocked(
     expected_content: str | None,
     offline: bool,
     verify_cached: bool,
+    refresh: bool,
 ) -> tuple[Path, str]:
     sources = store_root / "sources"
-    cached_content = expected_content or _source_index_read(store_root, package.source)
+    cached_content = None if refresh else expected_content or _source_index_read(store_root, package.source)
     if cached_content is not None:
         existing = sources / cached_content
         if existing.is_dir():
@@ -440,6 +443,8 @@ def _source_materialize_unlocked(
                 f"Package {package.name} content mismatch: expected {expected_content}, got {content_sha256}"
             )
         install = sources / content_sha256
+        if refresh and install.is_dir() and _tree_sha256(install) != content_sha256:
+            shutil.rmtree(install)
         if not install.exists():
             staged = Path(temporary_text) / "install"
             os.replace(source_root, staged)
@@ -460,6 +465,7 @@ def _source_materialize(
     expected_content: str | None,
     offline: bool,
     verify_cached: bool,
+    refresh: bool = False,
 ) -> tuple[Path, str]:
     lock = store_root / "locks" / f"{_source_cache_key(package.source)}.lock"
     with cache_lock(lock):
@@ -470,6 +476,7 @@ def _source_materialize(
             expected_content=expected_content,
             offline=offline,
             verify_cached=verify_cached,
+            refresh=refresh,
         )
 
 
@@ -630,6 +637,7 @@ def package_lock_create(
                 expected_content=expected,
                 offline=False,
                 verify_cached=True,
+                refresh=refresh,
             )
             from driftbuild.importers import package_provenance
 

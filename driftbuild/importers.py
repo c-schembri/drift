@@ -95,6 +95,8 @@ def package_provenance(source_root: Path, package: PackageSpec, _platform: str) 
         "adapter_versions": {adapter: versions.get(adapter, "host") for adapter in adapters},
         "options": dict(package.options),
         "features": list(package.features),
+        "components": list(package.components),
+        "linkage": package.linkage,
         "patches": [path.as_posix() for path in package.patches],
     }
 

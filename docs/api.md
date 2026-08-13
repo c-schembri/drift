@@ -26,11 +26,13 @@ Use `api.public(target)` when a dependency's compile interface should propagate 
 
 `api.package(...)` declares a locked source package separately from its eventual compile/link interface. Sources are exact
 `api.archive(url, sha256, strip_prefix=...)`, `api.git(url, revision, submodules=..., track=...)`, or
-`api.vcpkg(port, baseline, features=...)` values. `api.package` accepts portable `options`, `features`, `patches`, and an
+`api.vcpkg(port, baseline, features=...)` values. `api.package` accepts portable `options`, `features`, `patches`,
+`components`, and `linkage="auto" | "static" | "shared"`, plus an
 optional adapter override. Drift detects upstream Drift, Visual C++, CMake, Meson, Autotools, Conan, Make, B2, SCons,
 prebuilt, and header-only projects from materialized content. Pass the returned package directly to
 `api.public(...)` or `api.private(...)` to use its imported default library. Use `package.target("name")` only to select
-another exported target explicitly. See the [package guide](packages.md) for locking and current limitations.
+another exported target explicitly; `package.component("name")` is an equivalent component-oriented spelling. See the
+[package guide](packages.md) for locking and current limitations.
 
 `api.msbuild(project_file, ...)` is an explicit override for ambiguous Visual C++ repositories. Normal packages do not
 need it. Drift reads the selected project and its `ProjectReference` closure but never invokes MSBuild.

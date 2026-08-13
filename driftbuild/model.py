@@ -18,6 +18,7 @@ TargetKind: TypeAlias = Literal[
     "alias",
 ]
 Visibility: TypeAlias = Literal["public", "private"]
+PackageLinkage: TypeAlias = Literal["auto", "static", "shared"]
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,8 @@ class PackageRef:
     def target(self, name: str) -> PackageTargetRef:
         """Return a typed reference to one target exported by this package."""
         return PackageTargetRef(self.name, name)
+
+    component = target
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,8 @@ class PackageSpec:
     features: tuple[str, ...] = ()
     patches: tuple[Path, ...] = ()
     adapter: str | None = None
+    components: tuple[str, ...] = ()
+    linkage: PackageLinkage = "auto"
 
 
 @dataclass(frozen=True)

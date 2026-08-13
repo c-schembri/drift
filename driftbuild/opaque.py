@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
@@ -24,6 +23,7 @@ from driftbuild.model import (
 )
 from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
+from driftbuild.runtime import module_command
 from driftbuild.toolchain import toolchain_resolve
 
 
@@ -109,9 +109,7 @@ def project_import(
     produced = tuple(value for value in interface.link.libraries if isinstance(value, Path))
     action = ActionSpec(
         command=(
-            sys.executable,
-            "-m",
-            "driftbuild.opaque",
+            *module_command("driftbuild.opaque"),
             "--adapter",
             adapter,
             "--tool",

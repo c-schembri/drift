@@ -44,7 +44,7 @@ sdl = api.package(
 )
 ```
 
-Options, optional features, patches, and submodules are part of the lock and binary-cache identity:
+Options, optional features, components, linkage, patches, and submodules are part of the lock and binary-cache identity:
 
 ```python
 library = api.package(
@@ -52,6 +52,8 @@ library = api.package(
     source=api.git("https://example.invalid/library.git", REVISION, submodules=True),
     options={"shared": False, "tests": False},
     features=("simd",),
+    components=("core",),
+    linkage="static",
     patches=("patches/library.patch",),
     adapter="meson",  # only needed to override normal manifest detection
 )
@@ -100,8 +102,10 @@ app = api.executable("app", sources=api.files("main.c"), dependencies=(sdl,))
 
 This interface reflects the host and is intentionally not recorded as a source package in `drift.lock`.
 
-When a repository exports several unrelated libraries and no default can be inferred, select one explicitly with
-`package.target("upstream-target")`. `build=api.msbuild(...)` remains an escape hatch for ambiguous Visual C++ trees;
+Use `components=("upstream-target",)` when a package's default should be one named upstream component. Use
+`package.target("upstream-target")` or `package.component("upstream-target")` when different consumers need different
+exports from the same package. `linkage="static"` and `linkage="shared"` map to the native CMake and Meson selection
+without leaking their option names. `build=api.msbuild(...)` remains an escape hatch for ambiguous Visual C++ trees;
 it is not expected in ordinary package declarations.
 
 The overlay is trusted code owned by the root project. It receives a `ProjectApi` rooted at the verified package source,

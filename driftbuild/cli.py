@@ -11,7 +11,7 @@ import platform
 import sys
 from dataclasses import is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from driftbuild import __version__
 from driftbuild.errors import DriftError, ExecutionError
@@ -47,6 +47,7 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
         "install",
         "lock",
         "outdated",
+        "perf",
         "run",
         "task",
         "targets",
@@ -56,14 +57,20 @@ def _project_directory_normalize(arguments: list[str]) -> list[str]:
     operation_index = next((index for index, value in enumerate(arguments) if value in operations), None)
     if operation_index is None:
         return arguments
-    candidate_index = operation_index + 1
-    if arguments[operation_index] == "generate":
-        candidate_index += 1
-    if candidate_index >= len(arguments) or arguments[candidate_index].startswith("-"):
+    first_candidate = operation_index + (2 if arguments[operation_index] == "generate" else 1)
+    candidate_index = next(
+        (
+            index
+            for index in range(first_candidate, len(arguments))
+            if not arguments[index].startswith("-")
+            and Path(arguments[index]).is_dir()
+            and (Path(arguments[index]) / "drift.toml").is_file()
+        ),
+        None,
+    )
+    if candidate_index is None:
         return arguments
     candidate = Path(arguments[candidate_index]).resolve()
-    if not candidate.is_dir() or not (candidate / "drift.toml").is_file():
-        return arguments
     normalized = list(arguments)
     normalized.pop(candidate_index)
     return ["--root", str(candidate), *normalized]
@@ -266,6 +273,11 @@ def _base_parser() -> argparse.ArgumentParser:
     benchmark_parser = commands.add_parser("benchmark", help="run declared benchmarks")
     benchmark_parser.add_argument("names", nargs="*")
     benchmark_parser.set_defaults(handler=_benchmark)
+    perf_parser = commands.add_parser("perf", help="measure Drift configure and no-op build overhead")
+    perf_parser.add_argument("--repetitions", type=int, default=5)
+    perf_parser.add_argument("--output", type=Path)
+    perf_parser.add_argument("--json", action="store_true")
+    perf_parser.set_defaults(handler=_performance)
     artifact_parser = commands.add_parser("artifact", help="build and create reproducible artifacts")
     artifact_parser.add_argument("names", nargs="*")
     artifact_parser.set_defaults(handler=_artifact)
@@ -581,6 +593,24 @@ def _benchmark(arguments: argparse.Namespace, project: ProjectSpec, root: Path, 
 
     for result in benchmarks_run(project, root, root / ".drift", config, arguments.names):
         print(f"{result.name}: median {result.median_seconds:.6f}s, min {result.minimum_seconds:.6f}s")
+    return 0
+
+
+def _performance(arguments: argparse.Namespace, project: ProjectSpec, root: Path, config: BuildConfig) -> int:
+    from driftbuild.performance import performance_run
+
+    payload = performance_run(project, root, root / ".drift", config, arguments.repetitions, arguments.output)
+    if arguments.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        configure_payload = cast(dict[str, float], payload["configure"])
+        no_op_payload = cast(dict[str, float], payload["no_op_build"])
+        configure_median = configure_payload["median_seconds"]
+        no_op_median = no_op_payload["median_seconds"]
+        print(f"Drift performance ({arguments.repetitions} runs):")
+        print(f"  warm configure median: {configure_median:.3f}s")
+        print(f"  no-op build median:    {no_op_median:.3f}s")
+        print(f"  report: {payload['report']}")
     return 0
 
 

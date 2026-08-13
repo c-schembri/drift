@@ -36,6 +36,14 @@ jobs:
       - run: uv run pytest
         env:
           DRIFT_TEST_COMPILER: ${{ matrix.compiler }}
+      - name: Measure Drift overhead
+        if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'auto'
+        run: uv run drift perf examples/native --repetitions 5 --json
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.compiler == 'auto'
+        with:
+          name: drift-performance-linux
+          path: examples/native/.drift/performance.json
       - name: Build SDL3 example
         if: matrix.compiler == 'auto'
         run: uv run drift build examples/sdl3-window

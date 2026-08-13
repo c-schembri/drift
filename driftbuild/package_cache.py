@@ -55,6 +55,8 @@ def package_build_root(
         "adapter_version": adapter_versions.get(adapter, "host"),
         "options": package.options if isinstance(package, PackageSpec) else (),
         "features": package.features if isinstance(package, PackageSpec) else (),
+        "components": package.components if isinstance(package, PackageSpec) else (),
+        "linkage": package.linkage if isinstance(package, PackageSpec) else "auto",
         "config": config_payload(config),
         "toolchain_digest": toolchain_digest,
         "environment": environment,

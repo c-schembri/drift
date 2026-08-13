@@ -5,17 +5,23 @@
       "name": "inih",
       "overlay": null,
       "provenance": {
-        "adapter": "meson",
-        "adapter_version": "1.12.0",
+        "adapter_versions": {
+          "meson": "1.12.0"
+        },
+        "adapters": [
+          "meson"
+        ],
+        "components": [],
         "features": [],
+        "linkage": "static",
         "options": {
-          "default_library": "static",
           "tests": "false",
           "with_INIReader": "false"
         },
         "patches": []
       },
-      "request_sha256": "b4f668629ffc3fcc3c31a165088a1b654dc51c3167f329d16c27ebf5a7194efe",
+      "request_sha256": "2680947a405f57b20cc8dead3d287d236d68e69269a4e1bf3c0753af18f75a09",
+      "scope": "",
       "source": {
         "kind": "git",
         "revision": "577ae2dee1f0d9c2d11c7f10375c1715f3d6940c",
@@ -24,5 +30,5 @@
       }
     }
   ],
-  "version": 2
+  "version": 4
 }

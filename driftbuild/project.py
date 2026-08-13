@@ -30,6 +30,7 @@ from driftbuild.model import (
     LinkInterface,
     MsbuildProject,
     PackageBuild,
+    PackageLinkage,
     PackageRef,
     PackageSource,
     PackageSpec,
@@ -269,6 +270,8 @@ class ProjectApi:
         features: Sequence[str] = (),
         patches: Sequence[str | os.PathLike[str]] = (),
         adapter: str | None = None,
+        components: Sequence[str] = (),
+        linkage: PackageLinkage = "auto",
     ) -> PackageRef:
         """Declare one pinned external project without fetching or executing it."""
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) is None or name in (".", ".."):
@@ -291,6 +294,8 @@ class ProjectApi:
         }
         if adapter is not None and adapter not in supported_adapters:
             raise ConfigurationError(f"Unknown package adapter: {adapter}")
+        if linkage not in ("auto", "static", "shared"):
+            raise ConfigurationError(f"Unknown package linkage: {linkage}")
         overlay_path = _safe_relative(self.root, overlay, must_exist=True) if overlay is not None else None
         normalized_options = tuple(
             sorted(
@@ -303,6 +308,9 @@ class ProjectApi:
         normalized_features = tuple(sorted(set(features)))
         if any(re.fullmatch(r"[A-Za-z0-9_.-]+", feature) is None for feature in normalized_features):
             raise ConfigurationError("Package feature names contain invalid characters")
+        normalized_components = tuple(dict.fromkeys(components))
+        if any(re.fullmatch(r"[A-Za-z0-9_.:+-]+", component) is None for component in normalized_components):
+            raise ConfigurationError("Package component names contain invalid characters")
         patch_paths = tuple(_safe_relative(self.root, patch, must_exist=True) for patch in patches)
         self._packages[name] = PackageSpec(
             name,
@@ -313,6 +321,8 @@ class ProjectApi:
             normalized_features,
             patch_paths,
             adapter,
+            normalized_components,
+            linkage,
         )
         return PackageRef(name)
 

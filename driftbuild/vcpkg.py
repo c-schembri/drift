@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import shlex
-import sys
 from pathlib import Path
 
 from driftbuild.bootstrap import vcpkg_resolve
@@ -26,6 +25,7 @@ from driftbuild.model import (
 )
 from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
+from driftbuild.runtime import module_command
 from driftbuild.storage import drift_home
 
 
@@ -217,9 +217,7 @@ def project_import(
     )
     action = ActionSpec(
         command=(
-            sys.executable,
-            "-m",
-            "driftbuild.vcpkg",
+            *module_command("driftbuild.vcpkg"),
             "--vcpkg",
             str(executable),
             "--manifest-root",

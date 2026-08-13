@@ -9,7 +9,6 @@ import os
 import re
 import shlex
 import shutil
-import sys
 from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
@@ -27,6 +26,7 @@ from driftbuild.model import (
 )
 from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
+from driftbuild.runtime import module_command
 from driftbuild.toolchain import Toolchain, toolchain_resolve
 
 _SCHEMA_VERSION = 1
@@ -157,9 +157,7 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
     )
     action = ActionSpec(
         command=(
-            sys.executable,
-            "-m",
-            "driftbuild.autotools",
+            *module_command("driftbuild.autotools"),
             "--make",
             make,
             "--build-root",

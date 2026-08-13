@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from driftbuild.errors import ConfigurationError
@@ -19,6 +18,7 @@ from driftbuild.model import (
     TargetSpec,
 )
 from driftbuild.package_cache import package_build_root
+from driftbuild.runtime import module_command
 
 
 def _libraries(source_root: Path, config: BuildConfig) -> tuple[Path, ...]:
@@ -62,7 +62,7 @@ def project_import(source_root: Path, config: BuildConfig, package: PackageSpec)
     )
     stamp = package_build_root(source_root, package, config, "prebuilt") / ".drift-imported"
     action = ActionSpec(
-        command=(sys.executable, "-m", "driftbuild.prebuilt", "--stamp", str(stamp)),
+        command=(*module_command("driftbuild.prebuilt"), "--stamp", str(stamp)),
         outputs=(stamp,),
         description=f"PREBUILT {package.name}",
         restat=True,

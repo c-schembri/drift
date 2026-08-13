@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shlex
-import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,6 +25,7 @@ from driftbuild.model import (
 )
 from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
+from driftbuild.runtime import module_command
 from driftbuild.toolchain import toolchain_resolve
 
 _SCHEMA_VERSION = 1
@@ -95,6 +95,7 @@ def _configure(
         "toolchain_file": str(config.toolchain_file) if config.toolchain_file is not None else None,
         "options": dict(package.options) if isinstance(package, PackageSpec) else {},
         "features": list(package.features) if isinstance(package, PackageSpec) else [],
+        "linkage": package.linkage if isinstance(package, PackageSpec) else "auto",
     }
     state_path = build_root / ".drift-import.json"
     reply_root = build_root / ".cmake" / "api" / "v1" / "reply"
@@ -120,6 +121,8 @@ def _configure(
         if isinstance(package, PackageSpec):
             arguments.extend(f"-D{name}={value}" for name, value in package.options)
             arguments.extend(f"-D{feature}=ON" for feature in package.features)
+            if package.linkage != "auto" and "BUILD_SHARED_LIBS" not in dict(package.options):
+                arguments.append(f"-DBUILD_SHARED_LIBS={'ON' if package.linkage == 'shared' else 'OFF'}")
         if config.target is not None:
             arguments.extend(
                 (f"-DCMAKE_C_COMPILER_TARGET={config.target}", f"-DCMAKE_CXX_COMPILER_TARGET={config.target}")
@@ -206,10 +209,20 @@ def _target_outputs(target: dict[str, Any], build_root: Path) -> tuple[Path, ...
     return tuple(result)
 
 
-def _default_target(package_name: str, targets: tuple[TargetSpec, ...]) -> TargetRef | None:
+def _default_target(package: PackageSpec | str, targets: tuple[TargetSpec, ...]) -> TargetRef | None:
+    package_name = package.name if isinstance(package, PackageSpec) else package
     libraries = [target for target in targets if target.kind == "external_library"]
     if not libraries:
         return None
+    if isinstance(package, PackageSpec) and package.components:
+        available = {target.name.casefold(): target.name for target in libraries}
+        missing = [component for component in package.components if component.casefold() not in available]
+        if missing:
+            raise ConfigurationError(
+                f"CMake package {package.name} does not export requested components: {', '.join(missing)}"
+            )
+        if len(package.components) == 1:
+            return TargetRef(available[package.components[0].casefold()])
     if len(libraries) == 1:
         return TargetRef(libraries[0].name)
     package_key = re.sub(r"[^a-z0-9]", "", package_name.casefold())
@@ -217,7 +230,8 @@ def _default_target(package_name: str, targets: tuple[TargetSpec, ...]) -> Targe
     def score(target: TargetSpec) -> tuple[int, int, int, str]:
         target_key = re.sub(r"[^a-z0-9]", "", target.name.casefold())
         match = 0 if target_key == package_key else 1 if target_key.startswith(package_key) else 2
-        linkage = 0 if "shared" in target.name.casefold() else 1 if "static" in target.name.casefold() else 2
+        requested = package.linkage if isinstance(package, PackageSpec) else "auto"
+        linkage = 0 if requested != "auto" and requested in target.name.casefold() else 1
         return match, linkage, len(target.name), target.name.casefold()
 
     selected = min(libraries, key=score)
@@ -281,9 +295,7 @@ def project_import(
         stamp = build_root / ".drift-built" / f"{hashlib.sha256(identifier.encode()).hexdigest()}.stamp"
         action = ActionSpec(
             command=(
-                sys.executable,
-                "-m",
-                "driftbuild.adapter_action",
+                *module_command("driftbuild.adapter_action"),
                 "--stamp",
                 str(stamp),
                 "--lock",
@@ -312,6 +324,11 @@ def project_import(
                 include_dirs=_target_includes(description),
                 link_arguments=_target_link_arguments(description),
                 dependencies=tuple(dependencies),
+                runtime_files=tuple(
+                    output
+                    for output in outputs
+                    if output.suffix.casefold() in (".dll", ".so", ".dylib") or ".so." in output.name
+                ),
                 outputs=action.outputs,
                 action=action,
             )
@@ -319,5 +336,5 @@ def project_import(
     result = tuple(targets)
     if not result:
         raise ConfigurationError(f"CMake package {package_name} exposes no buildable native targets")
-    selected = _default_target(package_name, result)
+    selected = _default_target(package, result)
     return ProjectSpec(package_name, result, (selected,) if selected is not None else ())

@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,6 +27,7 @@ from driftbuild.model import (
 )
 from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
+from driftbuild.runtime import module_command
 from driftbuild.toolchain import Toolchain, toolchain_resolve
 
 _SCHEMA_VERSION = 1
@@ -77,6 +77,7 @@ def _configure(
         "sysroot": str(config.sysroot) if config.sysroot is not None else None,
         "options": dict(package.options) if isinstance(package, PackageSpec) else {},
         "features": list(package.features) if isinstance(package, PackageSpec) else [],
+        "linkage": package.linkage if isinstance(package, PackageSpec) else "auto",
         "toolchain_family": toolchain.family,
     }
     state_path = build_root / ".drift-import.json"
@@ -102,6 +103,8 @@ def _configure(
     if isinstance(package, PackageSpec):
         arguments.extend(f"-D{name}={value}" for name, value in package.options)
         arguments.extend(f"-D{feature}=enabled" for feature in package.features)
+        if package.linkage != "auto" and "default_library" not in dict(package.options):
+            arguments.append(f"-Ddefault_library={package.linkage}")
     if toolchain.family == "msvc":
         arguments.append("-Db_vscrt=mt")
     if config.toolchain_file is not None and config.toolchain_file.suffix.casefold() in (".ini", ".txt"):
@@ -186,8 +189,18 @@ def _external_dependencies(build_root: Path) -> dict[str, Dependency]:
     return result
 
 
-def _default_target(package_name: str, targets: tuple[TargetSpec, ...]) -> TargetRef | None:
+def _default_target(package: PackageSpec | str, targets: tuple[TargetSpec, ...]) -> TargetRef | None:
+    package_name = package.name if isinstance(package, PackageSpec) else package
     libraries = [target for target in targets if target.kind == "external_library"]
+    if isinstance(package, PackageSpec) and package.components:
+        available = {target.name.casefold(): target.name for target in libraries}
+        missing = [component for component in package.components if component.casefold() not in available]
+        if missing:
+            raise ConfigurationError(
+                f"Meson package {package.name} does not export requested components: {', '.join(missing)}"
+            )
+        if len(package.components) == 1:
+            return TargetRef(available[package.components[0].casefold()])
     if len(libraries) == 1:
         return TargetRef(libraries[0].name)
     package_key = re.sub(r"[^a-z0-9]", "", package_name.casefold())
@@ -267,9 +280,7 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
         stamp = build_root / ".drift-built" / f"{hashlib.sha256(identifier.encode()).hexdigest()}.stamp"
         action = ActionSpec(
             command=(
-                sys.executable,
-                "-m",
-                "driftbuild.adapter_action",
+                *module_command("driftbuild.adapter_action"),
                 "--stamp",
                 str(stamp),
                 "--lock",
@@ -293,6 +304,11 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
                 _TARGET_KINDS[target_type],
                 include_dirs=includes,
                 dependencies=tuple(dependencies),
+                runtime_files=tuple(
+                    output
+                    for output in outputs
+                    if output.suffix.casefold() in (".dll", ".so", ".dylib") or ".so." in output.name
+                ),
                 outputs=action.outputs,
                 action=action,
             )
@@ -300,5 +316,5 @@ def project_import(source_root: Path, state_root: Path, config: BuildConfig, pac
     result = tuple(targets)
     if not result:
         raise ConfigurationError(f"Meson package {package_name} exposes no buildable native targets")
-    selected = _default_target(package_name, result)
+    selected = _default_target(package, result)
     return ProjectSpec(package_name, result, (selected,) if selected is not None else ())

@@ -27,6 +27,7 @@ from driftbuild.model import (
 )
 from driftbuild.package_cache import package_build_root
 from driftbuild.process import run
+from driftbuild.runtime import module_command
 from driftbuild.storage import drift_home
 from driftbuild.toolchain import toolchain_resolve
 
@@ -285,9 +286,7 @@ def project_import(
         outputs = (stamp,)
     action = ActionSpec(
         command=(
-            sys.executable,
-            "-m",
-            "driftbuild.conan",
+            *module_command("driftbuild.conan"),
             "--source-root",
             str(source_root),
             "--response",

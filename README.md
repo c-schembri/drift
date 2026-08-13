@@ -68,11 +68,13 @@ Ninja 1.13.1, CMake 3.31.6, Meson 1.12.0, Conan 2.31.2, and vcpkg 2026-07-27 are
 - `drift clean [targets...]` removes default or selected target outputs through Ninja.
 - `drift install --prefix PATH` builds a conventional `include`, `lib`, and `bin` SDK with a verified manifest.
 - `drift generate visual-studio`, `vscode`, and `xcode` create IDE frontends that delegate builds to Drift.
-- `drift standalone --output drift.pyz` creates a standard-library-only portable zipapp.
+- `drift standalone --output drift.pyz` creates a standard-library-only portable zipapp. Tagged releases also
+  publish native application archives that do not require Python.
 - `drift graph` prints the validated target graph.
 - `drift targets` lists user targets and marks defaults; `--all` includes imported package targets.
 - `drift task [names...]` executes dependency-aware workflows with retries and resource locks.
 - `drift test`, `drift benchmark`, and `drift artifact` run their typed declarations.
+- `drift perf` records warm configure and no-op build latency in `.drift/performance.json`.
 - `drift release NAME` validates a release; `--publish` delegates publication to authenticated `gh`.
 - `drift remote NAME -- COMMAND...` uses the system SSH client for explicit remote work.
 - `drift command PATH...` invokes sync or async provider-defined commands with typed options.

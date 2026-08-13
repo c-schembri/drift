@@ -1,0 +1,59 @@
+name: Cross profiles
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "driftbuild/toolchain.py"
+      - "driftbuild/ninja.py"
+      - "examples/cross-smoke/**"
+      - ".github/workflows/cross.yml"
+  pull_request:
+    paths:
+      - "driftbuild/toolchain.py"
+      - "driftbuild/ninja.py"
+      - "examples/cross-smoke/**"
+
+jobs:
+  linux-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [mingw, emscripten, android]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: Install MinGW
+        if: matrix.profile == 'mingw'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+      - name: Install Emscripten
+        if: matrix.profile == 'emscripten'
+        run: sudo apt-get update && sudo apt-get install -y emscripten
+      - name: Build profile
+        run: uv run drift --profile ${{ matrix.profile }} build examples/cross-smoke
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_LATEST_HOME }}
+
+  windows-clang-cl:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run drift --profile clang-cl build examples/cross-smoke
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run drift --profile ios build examples/cross-smoke

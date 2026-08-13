@@ -22,6 +22,7 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 
 from driftbuild.errors import ConfigurationError
+from driftbuild.runtime import script_command
 from driftbuild.storage import tool_store_root
 
 NINJA_VERSION = "1.13.1"
@@ -71,13 +72,11 @@ _VCPKG_BINARIES = {
 def _meson_wrapper_write(install: Path) -> Path:
     launcher = install / "drift-meson.py"
     wrapper = install / ("meson.cmd" if os.name == "nt" else "meson")
+    command = script_command(launcher)
     if os.name == "nt":
-        content = f'@"{Path(sys.executable).resolve()}" "{launcher.resolve()}" %*\r\n'
+        content = "@" + " ".join(f'"{value}"' for value in command) + " %*\r\n"
     else:
-        content = (
-            f"#!/bin/sh\nexec {shlex.quote(str(Path(sys.executable).resolve()))} "
-            f'{shlex.quote(str(launcher.resolve()))} "$@"\n'
-        )
+        content = "#!/bin/sh\nexec " + " ".join(shlex.quote(value) for value in command) + ' "$@"\n'
     encoded = content.encode("ascii")
     if not wrapper.is_file() or wrapper.read_bytes() != encoded:
         wrapper.write_bytes(encoded)
@@ -330,7 +329,7 @@ def meson_command(_state_root: Path, override: str | None = None) -> tuple[str, 
             raise ConfigurationError(f"Cached Meson checksum mismatch at {entry}; remove it and retry")
         if not wrapper.is_file():
             _meson_wrapper_write(install)
-        return (os.fspath(Path(sys.executable).resolve()), os.fspath(launcher))
+        return script_command(launcher)
 
     install.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="drift-meson-", dir=install.parent) as temporary:
@@ -353,7 +352,7 @@ def meson_command(_state_root: Path, override: str | None = None) -> tuple[str, 
         except FileExistsError:
             pass
     _meson_wrapper_write(install)
-    return (os.fspath(Path(sys.executable).resolve()), os.fspath(launcher))
+    return script_command(launcher)
 
 
 def meson_resolve(state_root: Path, override: str | None = None) -> Path:
@@ -372,6 +371,9 @@ def conan_resolve(_state_root: Path, override: str | None = None) -> Path:
         if not executable.is_file():
             raise ConfigurationError(f"DRIFT_CONAN does not name a file: {executable}")
         return executable
+
+    if getattr(sys, "frozen", False):
+        return _conan_frozen_resolve()
 
     install = tool_store_root() / "conan" / CONAN_VERSION
     executable = install / ("Scripts/conan.exe" if os.name == "nt" else "bin/conan")
@@ -421,6 +423,60 @@ def conan_resolve(_state_root: Path, override: str | None = None) -> Path:
         marker.write_text(_CONAN_INSTALL_MARKER + "\n", encoding="ascii")
     if not executable.is_file():
         raise ConfigurationError(f"Pinned Conan installation did not produce {executable}")
+    return executable
+
+
+def _conan_frozen_resolve() -> Path:
+    """Install Conan beside a wrapper that re-enters the frozen Drift runtime."""
+    install = tool_store_root() / "conan" / CONAN_VERSION
+    packages = install / "site-packages"
+    executable = install / ("conan.cmd" if os.name == "nt" else "conan")
+    marker = install / ".drift-version"
+    current = Path(sys.executable).resolve()
+    current_digest = hashlib.sha256(current.read_bytes()).hexdigest()
+    expected_marker = f"{_CONAN_INSTALL_MARKER}:{current_digest}:{current}"
+    if executable.is_file() and packages.is_dir() and marker.is_file():
+        if marker.read_text(encoding="ascii").strip() == expected_marker:
+            return executable
+
+    install.parent.mkdir(parents=True, exist_ok=True)
+    with _exclusive_lock(install.parent / f".{CONAN_VERSION}.lock"):
+        if executable.is_file() and packages.is_dir() and marker.is_file():
+            if marker.read_text(encoding="ascii").strip() == expected_marker:
+                return executable
+        try:
+            install.resolve().relative_to((tool_store_root() / "conan").resolve())
+        except ValueError as error:
+            raise ConfigurationError(f"Unsafe managed Conan installation path: {install}") from error
+        if install.exists():
+            shutil.rmtree(install)
+        packages.mkdir(parents=True)
+        from driftbuild.process import run
+
+        run(
+            (
+                str(current),
+                "__drift_pip__",
+                "install",
+                "--disable-pip-version-check",
+                "--no-deps",
+                "--only-binary=:all:",
+                "--target",
+                str(packages),
+                *_CONAN_PACKAGES,
+            ),
+            capture=True,
+            timeout_seconds=300,
+        )
+        if os.name == "nt":
+            executable.write_text(f'@"{current}" __drift_conan__ %*\r\n', encoding="ascii")
+        else:
+            executable.write_text(
+                f"#!/bin/sh\nexec {shlex.quote(str(current))} __drift_conan__ \"$@\"\n",
+                encoding="ascii",
+            )
+        executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+        marker.write_text(expected_marker + "\n", encoding="ascii")
     return executable
 
 

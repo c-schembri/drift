@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from driftbuild.api import BuildConfig
+from driftbuild.api import BuildConfig, ProjectApi
 from driftbuild.meson import project_import
 from driftbuild.process import run
 
@@ -31,3 +31,22 @@ library('sample', 'sample.c', include_directories: include_directories('include'
     assert target.outputs
     run(target.action.command, environment=target.action.environment, capture=True)
     assert all(output.is_file() for output in target.outputs)
+
+
+def test_meson_package_linkage_selects_static_default(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "sample.c").write_text("int sample(void) { return 1; }\n", encoding="utf-8")
+    (source / "meson.build").write_text(
+        "project('sample', 'c')\nlibrary('sample', 'sample.c')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("DRIFT_MESON", raising=False)
+    api = ProjectApi(tmp_path, BuildConfig(sys.platform))
+    api.package("sample", source=api.git(str(source), "1" * 40), linkage="static")
+    package = api.project("consumer").packages[0]
+
+    imported = project_import(source, tmp_path / "state", api.config, package)
+
+    outputs = imported.targets[0].outputs
+    assert any(path.suffix.casefold() in (".a", ".lib") for path in outputs)

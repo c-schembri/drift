@@ -36,6 +36,8 @@ def _package_inspect(
         "adapter": adapter,
         "options": dict(package.options),
         "features": list(package.features),
+        "components": list(package.components),
+        "linkage": package.linkage,
         "source_root": str(source_root),
         "binary_cache": str(package_build_root(source_root, package, config, adapter)),
         "provenance": package_provenance(source_root, package, config.platform),

@@ -28,6 +28,7 @@ _OPERATIONS = {
     "graph",
     "inspect",
     "lock",
+    "perf",
     "release",
     "remote",
     "run",
@@ -178,6 +179,15 @@ def _no_op(arguments: list[str]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Exit quickly for a proven no-op build, otherwise load the complete CLI."""
     arguments = list(sys.argv[1:] if argv is None else argv)
+    from driftbuild.runtime import internal_dispatch
+
+    if getattr(sys, "frozen", False):
+        os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    if getattr(sys, "frozen", False) and Path(sys.argv[0]).stem.casefold() == "conan":
+        arguments = ["__drift_conan__", *arguments]
+    internal_result = internal_dispatch(arguments)
+    if internal_result is not None:
+        return internal_result
     started = time.perf_counter()
     if _no_op(arguments):
         print(f"Build timing: total {time.perf_counter() - started:.3f}s | no work")

@@ -1,0 +1,39 @@
+{
+  "packages": [
+    {
+      "content_sha256": "60453284f4877d2168db9612ed7f99746db8e0d18751a24cfa8b57ccd4003b23",
+      "name": "zlib",
+      "overlay": null,
+      "provenance": {
+        "adapter_versions": {
+          "autotools": "host",
+          "cmake": "3.31.6",
+          "make": "host",
+          "msbuild": "host"
+        },
+        "adapters": [
+          "cmake",
+          "autotools",
+          "make",
+          "msbuild"
+        ],
+        "components": [
+          "zlibstatic"
+        ],
+        "features": [],
+        "linkage": "static",
+        "options": {},
+        "patches": []
+      },
+      "request_sha256": "3ed263016d7f7ac316581b47b18832daa174f8268095212976731d3d30a197cb",
+      "scope": "",
+      "source": {
+        "kind": "git",
+        "revision": "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf",
+        "submodules": false,
+        "url": "https://github.com/madler/zlib.git"
+      }
+    }
+  ],
+  "version": 4
+}

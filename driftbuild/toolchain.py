@@ -15,6 +15,31 @@ from pathlib import Path
 from driftbuild.errors import ConfigurationError
 from driftbuild.model import BuildConfig
 
+_VC_ENVIRONMENT_NAMES = frozenset({"PATH", "INCLUDE", "LIB", "LIBPATH"})
+_VC_ENVIRONMENT_PREFIXES = (
+    "COMMANDPROMPTTYPE",
+    "DEVENVDIR",
+    "EXTENSIONSDKDIR",
+    "FRAMEWORK",
+    "NETFXSDKDIR",
+    "UCRTVERSION",
+    "UNIVERSALCRTSDKDIR",
+    "VCINSTALLDIR",
+    "VCTOOLS",
+    "VSINSTALLDIR",
+    "VSCMD_",
+    "WINDOWSSDK",
+)
+
+
+def _vc_environment_overlay(environment: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name: value
+        for name, value in environment.items()
+        if name.upper() in _VC_ENVIRONMENT_NAMES
+        or any(name.upper().startswith(prefix) for prefix in _VC_ENVIRONMENT_PREFIXES)
+    }
+
 
 @dataclass(frozen=True)
 class Toolchain:
@@ -85,7 +110,9 @@ def _vc_environment(architecture: str, state_root: Path | None) -> dict[str, str
                 if isinstance(environment, dict) and all(
                     isinstance(name, str) and isinstance(value, str) for name, value in environment.items()
                 ):
-                    return environment
+                    current = dict(os.environ)
+                    current.update(_vc_environment_overlay(environment))
+                    return current
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             pass
     completed = subprocess.run(
@@ -106,7 +133,11 @@ def _vc_environment(architecture: str, state_root: Path | None) -> dict[str, str
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(
             json.dumps(
-                {"script": str(script), "mtime_ns": script.stat().st_mtime_ns, "environment": environment},
+                {
+                    "script": str(script),
+                    "mtime_ns": script.stat().st_mtime_ns,
+                    "environment": _vc_environment_overlay(environment),
+                },
                 sort_keys=True,
             ),
             encoding="utf-8",

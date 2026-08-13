@@ -38,12 +38,16 @@ def test_package_declaration_normalizes_options_features_patches_and_vcpkg(tmp_p
         features=("optimised", "optimised"),
         patches=("fix.patch",),
         adapter="vcpkg",
+        components=("core", "tools"),
+        linkage="static",
     )
 
     package = api.project("sample").packages[0]
     assert package.options == (("level", "3"), ("shared", "false"))
     assert package.features == ("optimised",)
     assert package.patches == (Path("fix.patch"),)
+    assert package.components == ("core", "tools")
+    assert package.linkage == "static"
     assert source.features == ("tools",)
 
 

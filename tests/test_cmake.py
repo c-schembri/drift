@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from driftbuild.api import BuildConfig
+from driftbuild.api import BuildConfig, ProjectApi
 from driftbuild.bootstrap import ninja_resolve
 from driftbuild.cmake import project_import
 
@@ -73,3 +73,21 @@ def test_cmake_file_api_configuration_is_cached(tmp_path: Path, monkeypatch: pyt
     cached = project_import(source, state, config, "sample")
 
     assert cached.defaults[0].name == "sample"
+
+
+def test_cmake_package_linkage_selects_static_default(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "sample.c").write_text("int sample(void) { return 1; }\n", encoding="utf-8")
+    (source / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.20)\nproject(sample C)\nadd_library(sample sample.c)\n",
+        encoding="utf-8",
+    )
+    api = ProjectApi(tmp_path, BuildConfig(sys.platform))
+    api.package("sample", source=api.git(str(source), "1" * 40), linkage="static")
+    package = api.project("consumer").packages[0]
+
+    imported = project_import(source, tmp_path / "state", api.config, package)
+
+    outputs = imported.targets[0].outputs
+    assert any(path.suffix.casefold() in (".a", ".lib") for path in outputs)
