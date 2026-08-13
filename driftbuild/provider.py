@@ -57,7 +57,7 @@ def process_tree_stop(process: subprocess.Popen[Any], timeout: float = 10.0) -> 
         if os.name == "nt":
             process.kill()
         else:
-            os.kill(-process.pid, signal.SIGKILL)
+            os.kill(-process.pid, getattr(signal, "SIGKILL", 9))
         process.wait(timeout=timeout)
 
 
