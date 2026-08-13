@@ -19,7 +19,9 @@ def main() -> int:
     destination.mkdir(parents=True, exist_ok=True)
     for source_text in payload["files"]:
         source = Path(source_text)
-        shutil.copy2(source, destination / source.name)
+        target = destination / source.name
+        if source.resolve() != target.resolve():
+            shutil.copy2(source, target)
     stamp = Path(payload["stamp"])
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.touch()

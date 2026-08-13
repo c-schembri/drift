@@ -673,10 +673,11 @@ def generate(
 
         if target.kind == "executable":
             runtime_files = _runtime_files(target, targets, outputs, root)
-            if runtime_files:
+            staged_files = [path for path in runtime_files if path.parent.resolve() != output.parent.resolve()]
+            if staged_files:
                 stamp = build_root / "runtime" / f"{target.name}.stamp"
                 payload = {
-                    "files": [str(path) for path in runtime_files],
+                    "files": [str(path) for path in staged_files],
                     "destination": str(output.parent),
                     "stamp": str(stamp),
                 }
@@ -684,7 +685,7 @@ def generate(
                 _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
                 runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
                 lines += [
-                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path in runtime_files)} | {_ninja(output)}",
+                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path in staged_files)} | {_ninja(output)}",
                     f"  command = {runner}",
                     f"  description = RUNTIME {target.name}",
                     "  restat = 1",

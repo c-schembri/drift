@@ -231,3 +231,23 @@ def test_runtime_bundle_rejects_colliding_file_names(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="Runtime files collide"):
         generate(project, tmp_path, tmp_path / ".drift", BuildConfig("win32", compiler="msvc"), toolchain)
+
+
+def test_runtime_already_beside_executable_is_not_copied(tmp_path: Path) -> None:
+    (tmp_path / "library.c").write_text("int value(void) { return 1; }\n", encoding="utf-8")
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    library = TargetSpec("library", "shared_library", sources=(Path("library.c"),))
+    app = TargetSpec(
+        "app",
+        "executable",
+        sources=(Path("main.c"),),
+        dependencies=(TargetDependency(TargetRef("library"), "private"),),
+    )
+    project = ProjectSpec("fixture", (library, app), (TargetRef("app"),))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    ninja = generate(
+        project, tmp_path, tmp_path / ".drift", BuildConfig("win32", compiler="msvc"), toolchain
+    ).ninja_file.read_text(encoding="utf-8")
+
+    assert "RUNTIME app" not in ninja
