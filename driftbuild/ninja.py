@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from driftbuild import __version__
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate, transitive_targets
 from driftbuild.model import (
@@ -23,7 +24,7 @@ from driftbuild.model import (
     TargetRef,
     TargetSpec,
 )
-from driftbuild.runtime import module_command
+from driftbuild.runtime import module_command, provider_command
 from driftbuild.toolchain import Toolchain
 
 
@@ -549,8 +550,12 @@ def generate(
             inputs = [_source_path(root, value, outputs) for value in target.action.inputs]
             implicit_inputs = [_source_path(root, value, outputs) for value in target.action.implicit_inputs]
             order_only = [_source_path(root, value, outputs) for value in target.action.order_only]
+            action_command = target.action.command
+            if target.action.handler is not None:
+                action_command = (*provider_command(root, target.action.handler), *action_command)
             payload: dict[str, object] = {
-                "command": list(target.action.command),
+                "drift_version": __version__,
+                "command": list(action_command),
                 "environment": dict(target.action.environment),
                 "timeout_seconds": target.action.timeout_seconds,
                 "stamp_outputs": target.action.stamp_outputs,
@@ -585,18 +590,20 @@ def generate(
             output = outputs[target.name][0]
             destination = output.parent
             payload = {
+                "drift_version": __version__,
                 "entries": [
                     {"source": str(path), "destination": relative.as_posix()}
                     for path, relative in bundle_files
                 ],
                 "destination": str(destination),
                 "stamp": str(output),
+                "clean": target.runtime_clean,
             }
             spec_path = action_root / f"{target.name}-bundle.json"
             _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
             runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
             lines += [
-                f"build {_ninja(output)}: action {' '.join(_ninja(path) for path, _relative in bundle_files)}",
+                f"build {_ninja(output)}: action {' '.join(_ninja(path) for path, _relative in bundle_files)} | {_ninja(spec_path)}",
                 f"  command = {runner}",
                 f"  description = BUNDLE {target.name}",
                 "  restat = 1",
@@ -696,18 +703,21 @@ def generate(
             if staged_files:
                 stamp = build_root / "runtime" / f"{target.name}.stamp"
                 payload = {
+                    "drift_version": __version__,
                     "entries": [
                         {"source": str(path), "destination": relative.as_posix()}
                         for path, relative in staged_files
                     ],
                     "destination": str(output.parent),
                     "stamp": str(stamp),
+                    "clean": True,
                 }
-                spec_path = action_root / f"{target.name}-runtime.json"
+                spec_path = action_root / f"{target.name}-executable-runtime.json"
                 _write_if_changed(spec_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
                 runner = _shell([*module_command("driftbuild.bundle"), "--spec", str(spec_path)])
                 lines += [
-                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path, _relative in staged_files)} | {_ninja(output)}",
+                    f"build {_ninja(stamp)}: action {' '.join(_ninja(path) for path, _relative in staged_files)} "
+                    f"| {_ninja(output)} {_ninja(spec_path)}",
                     f"  command = {runner}",
                     f"  description = RUNTIME {target.name}",
                     "  restat = 1",

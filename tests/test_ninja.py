@@ -188,10 +188,32 @@ def test_executable_preserves_deployed_runtime_subdirectories(tmp_path: Path) ->
 
     generated = generate(project, tmp_path, tmp_path / ".drift", BuildConfig("win32", compiler="msvc"), toolchain)
     ninja = generated.ninja_file.read_text(encoding="utf-8").replace("$:", ":").replace("\\", "/")
-    runtime_spec = json.loads((tmp_path / ".drift/actions/app-runtime.json").read_text(encoding="utf-8"))
+    runtime_spec = json.loads((tmp_path / ".drift/actions/app-executable-runtime.json").read_text(encoding="utf-8"))
 
     assert "description = RUNTIME app" in ninja
     assert runtime_spec["entries"][0]["destination"] == "plugins/sample.dll"
+
+
+def test_custom_action_and_case_insensitive_executable_runtime_specs_do_not_collide(tmp_path: Path) -> None:
+    (tmp_path / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    runtime = tmp_path / "sample.dll"
+    runtime.write_bytes(b"shared")
+    action = ActionSpec(("tool",), (Path("generated.stamp"),))
+    generated = TargetSpec("app-runtime", "custom", outputs=action.outputs, action=action)
+    app = TargetSpec(
+        "App",
+        "executable",
+        sources=(Path("main.c"),),
+        dependencies=(Dependency("sample", runtime_files=(runtime,)),),
+    )
+    project = ProjectSpec("fixture", (generated, app), (TargetRef("App"),))
+    toolchain = Toolchain("msvc", "cl", "cl", "link", "lib", {}, ".obj", ".exe", "", ".lib", "", ".dll")
+
+    generate(project, tmp_path, tmp_path / ".drift", BuildConfig("win32", compiler="msvc"), toolchain)
+
+    action_root = tmp_path / ".drift" / "actions"
+    assert "command" in json.loads((action_root / "app-runtime.json").read_text(encoding="utf-8"))
+    assert "entries" in json.loads((action_root / "App-executable-runtime.json").read_text(encoding="utf-8"))
 
 
 def test_component_alias_propagates_each_library_interface(tmp_path: Path) -> None:

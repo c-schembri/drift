@@ -37,7 +37,17 @@ another exported target explicitly; `package.component("name")` is an equivalent
 `api.msbuild(project_file, ...)` is an explicit override for ambiguous Visual C++ repositories. Normal packages do not
 need it. Drift reads the selected project and its `ProjectReference` closure but never invokes MSBuild.
 
-`api.command_action(...)` defines a custom action with explicit inputs, outputs, environment, depfile policy, timeout, and Ninja pool. Register constrained pools with `api.pool(PoolSpec(...))`. Command arguments may use the exact tokens `{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap the action with `custom_target` or `external_library`. `runtime_bundle` copies explicit files beside a stamp target. `api.deploy(source, "plugins/name.dll")` preserves a relative runtime destination instead of flattening the file beside the executable. Deployments work on target and prebuilt-dependency runtime files. `alias` groups targets.
+`api.command_action(...)` defines an external command with explicit inputs, outputs, environment, depfile policy,
+timeout, and Ninja pool. `api.provider_action("tools.codegen:generate", ...)` instead imports a synchronous project
+handler through Drift's own runtime. It works in native installations without system Python and automatically tracks
+the handler module as an implicit input. Register constrained pools with `api.pool(PoolSpec(...))`. Arguments may use
+`{root}`, `{build}`, `{out}`, `{out:N}`, and `{in:N}`; Drift expands them without invoking a shell. Wrap either action
+with `custom_target` or `external_library`.
+
+`runtime_bundle(..., clean=True)` copies explicit files beside a stamp target and removes stale files previously owned
+by the same bundle. `api.deploy(source, "plugins/name.dll")` maps one destination. `api.deploy_tree(files, "assets",
+"Data")` preserves paths below a source root. Deployments work on target and prebuilt-dependency runtime files. `alias`
+groups targets.
 
 `api.cargo(...)` adds Cargo-owned binaries or workspaces to the same target graph. Drift schedules Cargo through Ninja,
 maps its release build type, tracks Rust and manifest inputs, and leaves dependency compilation to Cargo's incremental
@@ -71,21 +81,55 @@ the set can be narrowed with `checks=`.
 ## Platform services
 
 - `TaskSpec` declares workflow dependencies, subprocess or sync/async handler, retries, timeout, and resource locks.
-- `TestSpec` declares labels, build prerequisites, environment, and timeout. `isolated=True` supplies a temporary home,
-  app-data, config, and temp directory; `{temp}` in declared environment values resolves to that directory.
+- `TestSpec(target=app)` builds and runs a target's declared `run_command`, or its first output by default. Add
+  `arguments=`, or use `handler="tools.tests:probe"` for a project-owned test driver. `isolated=True` supplies a
+  temporary home, app-data, config, and temp directory; `{temp}` in environment values resolves there.
+- `SuiteSpec` composes `TaskSpec` nodes behind `drift test`. Dependencies preserve ordering, resources serialize only
+  conflicting work, independent tasks continue after a failure, and `exclusive=True` locks the complete suite.
+  Command process trees are stopped on timeout or interruption.
 - `MatrixSpec` declares Cartesian build or test axes such as build type, compiler, profile, and provider values.
 - `BenchmarkSpec` declares warmups, repetitions, and build prerequisites.
 - `ArtifactSpec` creates deterministic ZIP or tar.gz archives from source files and target outputs.
 - `ReleaseSpec` ties versions and artifacts to a tag. `GitHubSpec` enables explicit `gh` publication.
 - `RemoteSpec` configures explicit SSH execution and copy operations.
-- `CommandSpec` and `OptionSpec` expose typed provider commands. `CommandGroupSpec` documents intermediate command-tree
+- `CommandSpec` and `OptionSpec` expose typed provider commands. `build_targets=` builds prerequisites first and makes
+  configured paths available through `CommandContext.outputs`. `CommandGroupSpec` documents intermediate command-tree
   nodes used by `drift command ... --help` and shell completion. Handlers receive `CommandContext` and may be synchronous
   or asynchronous. Set `passthrough=True` for a command family that owns its own parser and must receive the remaining
   arguments unchanged.
 
+## Project options and local SDKs
+
+Declare project-specific configuration before using it:
+
+```python
+flavor = api.option("flavor", choices=("developer", "retail"), default="developer")
+workers = api.option("workers", value_type=int, default=4)
+```
+
+Users select values with `-D flavor=retail`. Unknown, duplicate, malformed, and unsupported values fail during project
+loading. Declared options also form valid matrix axes.
+
+`api.local_sdk(...)` imports a machine-local SDK from an environment variable or fallback root without embedding its
+layout in the project provider:
+
+```python
+vulkan = api.local_sdk(
+    "vulkan",
+    descriptor="sdk/vulkan.json",
+    environment=("VULKAN_SDK",),
+)
+```
+
+Descriptors can declare include and library directories, libraries, defines, compile/link arguments, runtime files,
+optional files, runtime globs, and conditional variants selected by platform, architecture, compiler, build type, or a
+project option. `${root}`, `${project}`, `${platform}`, `${architecture}`, `${build_type}`, and `${option:name}` are
+available in descriptor values. Descriptor timestamps and SDK-root environment variables invalidate Drift's warm
+configuration cache.
+
 ## Project requirement
 
-Set `requires-drift = "==0.2.0"` in the manifest's `[project]` table to pin a project to one Drift release. Every
+Set `requires-drift = "==0.3.0"` in the manifest's `[project]` table to pin a project to one Drift release. Every
 provider-loading command validates the constraint. `drift bootstrap` checks it without loading the provider, and
 `drift bootstrap --install` installs an exact pinned release through Drift's verified self-updater.
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import subprocess
+import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -14,7 +16,7 @@ from typing import Any
 
 from driftbuild.errors import ExecutionError
 from driftbuild.model import CommandContext, ProjectSpec, TaskSpec
-from driftbuild.process import run
+from driftbuild.process import OwnedProcess, command_render
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,28 @@ class TaskResult:
     name: str
     attempts: int
     duration_seconds: float
+    status: str = "passed"
+    detail: str = ""
+
+
+class _ProcessRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._processes: set[OwnedProcess] = set()
+
+    def add(self, process: OwnedProcess) -> None:
+        with self._lock:
+            self._processes.add(process)
+
+    def remove(self, process: OwnedProcess) -> None:
+        with self._lock:
+            self._processes.discard(process)
+
+    def stop_all(self) -> None:
+        with self._lock:
+            processes = tuple(self._processes)
+        for process in processes:
+            process.stop()
 
 
 async def _await(value: Awaitable[Any]) -> Any:
@@ -36,7 +60,7 @@ def _invoke(handler: Callable[..., Any], context: CommandContext) -> None:
         asyncio.run(_await(value))
 
 
-def _execute(task: TaskSpec, context: CommandContext) -> TaskResult:
+def _execute(task: TaskSpec, context: CommandContext, registry: _ProcessRegistry) -> TaskResult:
     started = time.perf_counter()
     last_error: Exception | None = None
     for attempt in range(1, task.retries + 2):
@@ -44,19 +68,37 @@ def _execute(task: TaskSpec, context: CommandContext) -> TaskResult:
             if task.command is not None:
                 environment = dict(context.environment)
                 environment.update(task.environment)
-                run(
+                process = OwnedProcess(
                     task.command,
                     cwd=context.project_root,
                     environment=environment,
-                    timeout_seconds=task.timeout_seconds,
                 )
+                registry.add(process)
+                try:
+                    try:
+                        return_code = process.wait(timeout=task.timeout_seconds)
+                    except subprocess.TimeoutExpired as error:
+                        raise ExecutionError(f"Command timed out: {command_render(task.command)}") from error
+                    if return_code != 0:
+                        raise ExecutionError(f"Command failed ({return_code}): {command_render(task.command)}")
+                finally:
+                    try:
+                        process.stop()
+                    finally:
+                        registry.remove(process)
             elif task.handler is not None:
                 _invoke(task.handler, context)
             return TaskResult(task.name, attempt, time.perf_counter() - started)
         except Exception as error:
             last_error = error
     assert last_error is not None
-    raise ExecutionError(f"Task {task.name} failed after {task.retries + 1} attempt(s): {last_error}") from last_error
+    return TaskResult(
+        task.name,
+        task.retries + 1,
+        time.perf_counter() - started,
+        "failed",
+        str(last_error),
+    )
 
 
 def tasks_run(
@@ -81,20 +123,32 @@ def tasks_run(
     context = CommandContext(root, state_root, dict(os.environ))
     pending = set(required)
     complete: set[str] = set()
+    failed: set[str] = set()
     running: dict[Future[TaskResult], TaskSpec] = {}
     held_resources: set[str] = set()
     results: list[TaskResult] = []
+    registry = _ProcessRegistry()
     worker_count = jobs or max(1, min(32, os.cpu_count() or 1))
-    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="drift-task") as executor:
+    executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="drift-task")
+    try:
         while pending or running:
             launched = False
             for name in sorted(pending):
                 task = tasks[name]
+                failed_dependencies = sorted(set(task.dependencies) & failed)
+                if failed_dependencies:
+                    pending.remove(name)
+                    failed.add(name)
+                    results.append(
+                        TaskResult(name, 0, 0.0, "skipped", "dependency failed: " + ", ".join(failed_dependencies))
+                    )
+                    launched = True
+                    continue
                 if not set(task.dependencies) <= complete or set(task.resources) & held_resources:
                     continue
                 pending.remove(name)
                 held_resources.update(task.resources)
-                running[executor.submit(_execute, task, context)] = task
+                running[executor.submit(_execute, task, context, registry)] = task
                 launched = True
                 if len(running) >= worker_count:
                     break
@@ -110,5 +164,17 @@ def tasks_run(
                 held_resources.difference_update(task.resources)
                 result = future.result()
                 results.append(result)
-                complete.add(task.name)
+                if result.status == "passed":
+                    complete.add(task.name)
+                else:
+                    failed.add(task.name)
+    except BaseException:
+        registry.stop_all()
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    failed_results = [result for result in results if result.status != "passed"]
+    if failed_results:
+        detail = "; ".join(f"{result.name}: {result.detail}" for result in failed_results)
+        raise ExecutionError(f"Workflow failed: {detail}")
     return tuple(results)

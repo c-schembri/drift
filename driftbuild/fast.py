@@ -62,6 +62,7 @@ class _ConfiguredState(TypedDict):
     environment: dict[str, str]
     environment_removed: list[str]
     output_phases: dict[str, str]
+    configuration_environment: dict[str, str | None]
 
 
 def _value(arguments: list[str], name: str, default: str) -> str:
@@ -130,6 +131,7 @@ def _state_load(path: Path) -> _ConfiguredState | None:
         environment = state["environment"]
         environment_removed = state["environment_removed"]
         output_phases = state["output_phases"]
+        configuration_environment = state["configuration_environment"]
         if not isinstance(inputs, dict) or not isinstance(directories, dict):
             return None
         if not all(isinstance(source, str) and isinstance(modified, int) for source, modified in inputs.items()):
@@ -152,10 +154,18 @@ def _state_load(path: Path) -> _ConfiguredState | None:
             isinstance(output, str) and isinstance(phase, str) for output, phase in output_phases.items()
         ):
             return None
+        if not isinstance(configuration_environment, dict) or not all(
+            isinstance(name, str) and (value is None or isinstance(value, str))
+            for name, value in configuration_environment.items()
+        ):
+            return None
+        if any(os.environ.get(name) != value for name, value in configuration_environment.items()):
+            return None
         return {
             "environment": cast(dict[str, str], environment),
             "environment_removed": cast(list[str], environment_removed),
             "output_phases": cast(dict[str, str], output_phases),
+            "configuration_environment": cast(dict[str, str | None], configuration_environment),
         }
     except (AttributeError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return None

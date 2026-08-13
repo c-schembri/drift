@@ -10,6 +10,7 @@ import sys
 import tomllib
 import urllib.parse
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -40,10 +41,12 @@ from driftbuild.model import (
     PackageSpec,
     PackageTargetRef,
     PoolSpec,
+    ProjectOptionSpec,
     ProjectSpec,
     ReleaseSpec,
     RemoteSpec,
     RuntimeInput,
+    SuiteSpec,
     TargetDependency,
     TargetKind,
     TargetRef,
@@ -105,7 +108,10 @@ class ProjectApi:
         self._command_groups: list[CommandGroupSpec] = []
         self._tasks: list[TaskSpec] = []
         self._pools: list[PoolSpec] = []
+        self._options: list[ProjectOptionSpec] = []
+        self._option_values: dict[str, str] = {}
         self._tests: list[TestSpec] = []
+        self._suites: list[SuiteSpec] = []
         self._matrices: list[MatrixSpec] = []
         self._benchmarks: list[BenchmarkSpec] = []
         self._artifacts: list[ArtifactSpec] = []
@@ -113,6 +119,8 @@ class ProjectApi:
         self._remotes: list[RemoteSpec] = []
         self._github: GitHubSpec | None = None
         self._discovery_directories: set[Path] = set()
+        self._configuration_inputs: set[Path] = set()
+        self._configuration_environment: set[str] = set()
 
     def files(self, *paths: str | os.PathLike[str]) -> FileSet:
         """Return explicit, validated repository-relative files."""
@@ -200,6 +208,113 @@ class ProjectApi:
             restat=restat,
             stamp_outputs=stamp_outputs,
         )
+
+    def provider_action(
+        self,
+        handler: str,
+        arguments: Sequence[str] = (),
+        *,
+        outputs: Sequence[str | os.PathLike[str]],
+        inputs: FileSet | BuildInput | Sequence[BuildInput] | None = None,
+        implicit_inputs: FileSet | BuildInput | Sequence[BuildInput] | None = None,
+        order_only: FileSet | BuildInput | Sequence[BuildInput] | None = None,
+        environment: Mapping[str, str] | None = None,
+        description: str | None = None,
+        pool: str | None = None,
+        timeout_seconds: float | None = None,
+        restat: bool = False,
+        stamp_outputs: bool = False,
+    ) -> ActionSpec:
+        """Declare an importable provider handler executed by Drift's bundled runtime."""
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*", handler) is None:
+            raise ConfigurationError(f"Provider handler must be 'module:function': {handler!r}")
+        module_name = handler.partition(":")[0]
+        module_path = self.root.joinpath(*module_name.split(".")).with_suffix(".py")
+        if not module_path.is_file():
+            package_path = self.root.joinpath(*module_name.split("."), "__init__.py")
+            module_path = package_path if package_path.is_file() else module_path
+        if not module_path.is_file():
+            raise ConfigurationError(f"Provider handler module does not exist: {module_name}")
+        tracked_inputs = (*_inputs(implicit_inputs), module_path.resolve())
+        return ActionSpec(
+            command=tuple(str(value) for value in arguments),
+            outputs=tuple(Path(value) for value in outputs),
+            inputs=_inputs(inputs),
+            implicit_inputs=tuple(dict.fromkeys(tracked_inputs)),
+            order_only=_inputs(order_only),
+            environment=dict(environment or {}),
+            description=description,
+            pool=pool,
+            timeout_seconds=timeout_seconds,
+            restat=restat,
+            stamp_outputs=stamp_outputs,
+            handler=handler,
+        )
+
+    def option(
+        self,
+        name: str,
+        *,
+        value_type: type[str] | type[int] | type[float] | type[bool] = str,
+        default: str | int | float | bool | None = None,
+        choices: Sequence[str] = (),
+        help: str = "",
+    ) -> Any:
+        """Declare, validate, and return one typed provider configuration value."""
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", name) is None:
+            raise ConfigurationError(f"Invalid project option name: {name!r}")
+        if any(existing.name == name for existing in self._options):
+            raise ConfigurationError(f"Duplicate project option: {name}")
+        if value_type not in (str, int, float, bool):
+            raise ConfigurationError(f"Unsupported project option type for {name}: {value_type}")
+        if default is not None and type(default) is not value_type:
+            raise ConfigurationError(f"Project option {name} default must be {value_type.__name__}")
+        if choices and value_type is not str:
+            raise ConfigurationError(f"Project option {name} choices require a string value type")
+        raw = self.config.values.get(name)
+        value: Any = default
+        if raw is not None:
+            try:
+                if value_type is bool:
+                    lowered = raw.casefold()
+                    if lowered not in ("true", "false"):
+                        raise ValueError
+                    value = lowered == "true"
+                else:
+                    value = value_type(raw)
+            except ValueError as error:
+                raise ConfigurationError(f"Project option {name} has invalid {value_type.__name__} value: {raw!r}") from error
+        if value is None:
+            raise ConfigurationError(f"Project option {name} requires a value")
+        if choices and str(value) not in choices:
+            raise ConfigurationError(f"Project option {name} must be one of: {', '.join(choices)}")
+        self._options.append(ProjectOptionSpec(name, value_type, default, tuple(choices), help))
+        self._option_values[name] = str(value).lower() if isinstance(value, bool) else str(value)
+        return value
+
+    def local_sdk(
+        self,
+        name: str,
+        *,
+        descriptor: str | os.PathLike[str],
+        environment: Sequence[str] = (),
+        roots: Sequence[str | os.PathLike[str] | None] = (),
+    ) -> Dependency:
+        """Import a manifest-described local SDK from the first available root."""
+        from driftbuild.sdk import local_sdk_load
+
+        descriptor_path = self.root / _safe_relative(self.root, descriptor, must_exist=True)
+        self._configuration_inputs.add(descriptor_path)
+        self._configuration_environment.update(environment)
+        candidates = [Path(value).expanduser() for variable in environment if (value := os.environ.get(variable))]
+        candidates.extend(Path(value).expanduser() for value in roots if value is not None)
+        resolved = [path.resolve() if path.is_absolute() else (self.root / path).resolve() for path in candidates]
+        selected = next((path for path in resolved if path.is_dir()), None)
+        if selected is None:
+            detail = ", ".join(str(path) for path in resolved) or "no roots configured"
+            raise ConfigurationError(f"Local SDK {name} was not found: {detail}")
+        selected_config = replace(self.config, values={**self.config.values, **self._option_values})
+        return local_sdk_load(name, selected, descriptor_path, self.root, selected_config)
 
     def _cargo_action(
         self,
@@ -612,6 +727,7 @@ class ProjectApi:
         run_command: Sequence[str] = (),
         run_environment: Mapping[str, str] | None = None,
         run_working_directory: str | os.PathLike[str] | None = None,
+        runtime_clean: bool = False,
     ) -> TargetRef:
         if not name or any(character.isspace() for character in name):
             raise ConfigurationError(f"Invalid target name: {name!r}")
@@ -644,6 +760,7 @@ class ProjectApi:
                 if run_working_directory is not None
                 else None
             ),
+            runtime_clean=runtime_clean,
         )
         self._targets[name] = spec
         return TargetRef(name)
@@ -693,12 +810,14 @@ class ProjectApi:
         files: FileSet | RuntimeInput | Sequence[RuntimeInput],
         *,
         destination: str | os.PathLike[str] = ".",
+        clean: bool = True,
     ) -> TargetRef:
         return self._target(
             name,
             "runtime_bundle",
             runtime_files=files,
             outputs=(Path(destination) / f".{name}.stamp",),
+            runtime_clean=clean,
         )
 
     def deploy(
@@ -718,6 +837,26 @@ class ProjectApi:
         if target.is_absolute() or ".." in target.parts or target in (Path(""), Path(".")):
             raise ConfigurationError(f"Runtime destination must be a relative file path: {target}")
         return Deployment(resolved_source, target)
+
+    def deploy_tree(
+        self,
+        files: FileSet,
+        source_root: str | os.PathLike[str],
+        destination: str | os.PathLike[str] = ".",
+    ) -> tuple[Deployment, ...]:
+        """Map a deterministic file tree while preserving paths below its source root."""
+        relative_root = _safe_relative(self.root, source_root, must_exist=True)
+        destination_root = Path(destination)
+        if destination_root.is_absolute() or ".." in destination_root.parts:
+            raise ConfigurationError(f"Runtime tree destination must be relative: {destination_root}")
+        deployments: list[Deployment] = []
+        for source in files:
+            try:
+                relative = source.relative_to(relative_root)
+            except ValueError as error:
+                raise ConfigurationError(f"Runtime tree input {source} is outside {relative_root}") from error
+            deployments.append(self.deploy(source, destination_root / relative))
+        return tuple(deployments)
 
     def alias(self, name: str, targets: Sequence[TargetRef]) -> TargetRef:
         return self._target(name, "alias", objects=targets)
@@ -753,6 +892,14 @@ class ProjectApi:
         if any(existing.name == spec.name for existing in self._tests):
             raise ConfigurationError(f"Duplicate test: {spec.name}")
         self._tests.append(spec)
+
+    def suite(self, spec: SuiteSpec) -> None:
+        """Register a dependency-aware test suite."""
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", spec.name) is None:
+            raise ConfigurationError(f"Invalid suite name: {spec.name!r}")
+        if any(existing.name == spec.name for existing in self._suites):
+            raise ConfigurationError(f"Duplicate suite: {spec.name}")
+        self._suites.append(spec)
 
     def matrix(self, spec: MatrixSpec) -> None:
         """Register a named Cartesian configuration matrix."""
@@ -807,6 +954,7 @@ class ProjectApi:
             tasks=tuple(self._tasks),
             pools=tuple(self._pools),
             tests=tuple(self._tests),
+            suites=tuple(self._suites),
             matrices=tuple(self._matrices),
             benchmarks=tuple(self._benchmarks),
             artifacts=tuple(self._artifacts),
@@ -814,6 +962,9 @@ class ProjectApi:
             remotes=tuple(self._remotes),
             github=self._github,
             discovery_directories=tuple(sorted(self._discovery_directories, key=lambda path: path.as_posix())),
+            options=tuple(self._options),
+            configuration_inputs=tuple(sorted(self._configuration_inputs, key=lambda path: path.as_posix())),
+            configuration_environment=tuple(sorted(self._configuration_environment)),
         )
 
 
@@ -868,6 +1019,10 @@ def project_load(root: Path, config: BuildConfig) -> ProjectSpec:
         sys.path.pop(0)
     if not isinstance(result, ProjectSpec):
         raise ConfigurationError(f"Provider {provider} did not return ProjectSpec")
+    if result.options:
+        unknown = sorted(set(config.values) - {option.name for option in result.options})
+        if unknown:
+            raise ConfigurationError(f"Unknown project options: {', '.join(unknown)}")
     return result
 
 

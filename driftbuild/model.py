@@ -188,6 +188,7 @@ class Dependency:
     compile: CompileInterface = CompileInterface()
     link: LinkInterface = LinkInterface()
     runtime_files: tuple[RuntimeInput, ...] = ()
+    root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +216,7 @@ class ActionSpec:
     timeout_seconds: float | None = None
     restat: bool = False
     stamp_outputs: bool = False
+    handler: str | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,7 @@ class TargetSpec:
     run_command: tuple[str, ...] = ()
     run_environment: Mapping[str, str] = field(default_factory=dict)
     run_working_directory: Path | None = None
+    runtime_clean: bool = False
 
 
 @dataclass(frozen=True)
@@ -278,6 +281,18 @@ class CommandSpec:
     options: tuple[OptionSpec, ...] = ()
     options_type: type[Any] | None = None
     passthrough: bool = False
+    build_targets: tuple[TargetRef, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProjectOptionSpec:
+    """Typed provider configuration value selected with `-D NAME=VALUE`."""
+
+    name: str
+    value_type: type[str] | type[int] | type[float] | type[bool] = str
+    default: str | int | float | bool | None = None
+    choices: tuple[str, ...] = ()
+    help: str = ""
 
 
 @dataclass(frozen=True)
@@ -315,13 +330,26 @@ class TestSpec:
     """Test invocation with labels, timeout, and optional build prerequisite."""
 
     name: str
-    command: tuple[str, ...]
+    command: tuple[str, ...] = ()
     labels: tuple[str, ...] = ()
     build_targets: tuple[TargetRef, ...] = ()
     environment: Mapping[str, str] = field(default_factory=dict)
     timeout_seconds: float | None = None
     working_directory: Path | None = None
     isolated: bool = False
+    target: TargetRef | None = None
+    arguments: tuple[str, ...] = ()
+    handler: str | None = None
+
+
+@dataclass(frozen=True)
+class SuiteSpec:
+    """Named dependency-aware test suite composed from workflow tasks."""
+
+    name: str
+    tasks: tuple[TaskSpec, ...]
+    labels: tuple[str, ...] = ()
+    exclusive: bool = False
 
 
 @dataclass(frozen=True)
@@ -407,6 +435,10 @@ class ProjectSpec:
     remotes: tuple[RemoteSpec, ...] = ()
     github: GitHubSpec | None = None
     discovery_directories: tuple[Path, ...] = ()
+    options: tuple[ProjectOptionSpec, ...] = ()
+    suites: tuple[SuiteSpec, ...] = ()
+    configuration_inputs: tuple[Path, ...] = ()
+    configuration_environment: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -417,3 +449,4 @@ class CommandContext:
     state_root: Path
     environment: Mapping[str, str]
     verbose: bool = False
+    outputs: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from driftbuild.runtime import internal_dispatch, module_command, script_command
+from driftbuild.runtime import internal_dispatch, module_command, provider_command, script_command
 
 
 def test_module_command_uses_python_module_when_installed() -> None:
@@ -32,3 +32,14 @@ def test_script_command_reenters_frozen_executable(tmp_path: Path, monkeypatch: 
 def test_internal_dispatch_rejects_arbitrary_modules() -> None:
     with pytest.raises(ValueError, match="Unsupported internal"):
         internal_dispatch(("__drift_internal__", "os"))
+
+
+def test_provider_command_reenters_frozen_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    assert provider_command(tmp_path, "build:generate") == (
+        sys.executable,
+        "__drift_provider__",
+        str(tmp_path.resolve()),
+        "build:generate",
+    )

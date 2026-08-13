@@ -59,6 +59,7 @@ def test_cached_build_uses_shared_ninja_provider_values_and_environment(
         "environment": {"DRIFT_TEST_CACHED": "configured"},
         "environment_removed": [],
         "output_phases": {},
+        "configuration_environment": {},
     }
     (build_root / "configured.json").write_text(json.dumps(configured), encoding="utf-8")
     cache = tmp_path / "cache"
@@ -96,9 +97,34 @@ def test_cached_state_invalidates_when_discovery_directory_changes(tmp_path: Pat
         "environment": {},
         "environment_removed": [],
         "output_phases": {},
+        "configuration_environment": {},
     }
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     assert _state_load(state_path) is not None
     (sources / "new.cpp").write_text("", encoding="utf-8")
+    assert _state_load(state_path) is None
+
+
+def test_cached_state_invalidates_when_configuration_environment_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = tmp_path / "drift_project.py"
+    provider.write_text("", encoding="utf-8")
+    state_path = tmp_path / "configured.json"
+    state = {
+        "drift_version": __version__,
+        "inputs": {str(provider): provider.stat().st_mtime_ns},
+        "directories": {},
+        "environment": {},
+        "environment_removed": [],
+        "output_phases": {},
+        "configuration_environment": {"SAMPLE_SDK_ROOT": "one"},
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setenv("SAMPLE_SDK_ROOT", "one")
+
+    assert _state_load(state_path) is not None
+
+    monkeypatch.setenv("SAMPLE_SDK_ROOT", "two")
     assert _state_load(state_path) is None

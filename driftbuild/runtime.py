@@ -14,6 +14,7 @@ _INTERNAL_MARKER = "__drift_internal__"
 _SCRIPT_MARKER = "__drift_script__"
 _PIP_MARKER = "__drift_pip__"
 _CONAN_MARKER = "__drift_conan__"
+_PROVIDER_MARKER = "__drift_provider__"
 _INTERNAL_MODULES = frozenset(
     {
         "driftbuild.action",
@@ -24,6 +25,7 @@ _INTERNAL_MODULES = frozenset(
         "driftbuild.conan",
         "driftbuild.opaque",
         "driftbuild.prebuilt",
+        "driftbuild.provider_action",
         "driftbuild.vcpkg",
     }
 )
@@ -48,6 +50,17 @@ def script_command(script: Path) -> tuple[str, ...]:
     if getattr(sys, "frozen", False):
         return executable, _SCRIPT_MARKER, str(script.resolve())
     return executable, str(script.resolve())
+
+
+def provider_command(root: Path, handler: str) -> tuple[str, ...]:
+    """Return a command that invokes one project-owned provider handler."""
+    executable = sys.executable
+    if getattr(sys, "frozen", False):
+        return executable, _PROVIDER_MARKER, str(root.resolve()), handler
+    launcher = Path(sys.argv[0]).resolve()
+    if launcher.suffix == ".pyz":
+        return executable, str(launcher), _PROVIDER_MARKER, str(root.resolve()), handler
+    return executable, "-m", "driftbuild.provider_action", "--root", str(root.resolve()), "--handler", handler
 
 
 def _external_path(path: Path) -> None:
@@ -84,6 +97,12 @@ def internal_dispatch(arguments: Sequence[str]) -> int | None:
         _external_path(tool_store_root() / "conan" / CONAN_VERSION / "site-packages")
         conan_main = cast(Callable[[list[str]], int | None], importlib.import_module("conan.cli.cli").main)
         return int(conan_main(list(arguments[1:])) or 0)
+    if arguments and arguments[0] == _PROVIDER_MARKER:
+        if len(arguments) < 3:
+            raise ValueError("Provider action requires a root and handler")
+        from driftbuild.provider_action import invoke
+
+        return invoke(Path(arguments[1]), arguments[2], arguments[3:])
     if len(arguments) < 2 or arguments[0] != _INTERNAL_MARKER:
         return None
     module_name = arguments[1]

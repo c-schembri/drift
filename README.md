@@ -20,7 +20,7 @@ layout: Drift detects the appropriate adapter, imports its compile and link inte
 The native Drift release does not require Python, uv, Ninja, CMake, or Meson to be installed. Drift ships as a native
 application and downloads each pinned build tool only when the active graph needs it.
 
-> Drift 0.2 is experimental. Provider API v1 is stable within the 0.2 release line, but the wider command and package
+> Drift 0.3 is experimental. Provider API v1 is stable within the 0.3 release line, but the wider command and package
 > surface is still evolving.
 
 ## Why Drift?
@@ -59,7 +59,7 @@ export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/drift/bin:$PATH"
 drift --version
 ```
 
-Add that export to your shell profile. Set `DRIFT_VERSION=0.2.0` when running either installer to select an exact
+Add that export to your shell profile. Set `DRIFT_VERSION=0.3.0` when running either installer to select an exact
 release. Native archives are currently published for Windows x86_64, Linux x86_64, and macOS arm64.
 
 Once installed, Drift updates itself without Python or uv:
@@ -86,7 +86,7 @@ hello/
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.2.0"
+requires-drift = "==0.3.0"
 ```
 
 `build.py` declares the graph through the supported `driftbuild.api` surface:
@@ -245,7 +245,8 @@ The provider can declare project operations alongside build targets:
 
 | Declaration | Command | Use |
 | --- | --- | --- |
-| `TestSpec` | `drift test` | Labeled tests with build prerequisites, timeouts, and isolated environments |
+| `TestSpec` | `drift test` | Target-bound tests, labels, timeouts, and isolated environments |
+| `SuiteSpec` | `drift test` | Composite test DAGs with shared resources and exclusive-host locks |
 | `TaskSpec` | `drift task` | Dependency-aware workflows with retries and resource locks |
 | `MatrixSpec` | `drift matrix` | Build and test matrices across compilers, profiles, and provider values |
 | `BenchmarkSpec` | `drift benchmark` | Warmed, repeated project benchmarks |
@@ -256,6 +257,15 @@ The provider can declare project operations alongside build targets:
 
 `drift perf` measures Drift's own warm-configure and no-op overhead and can enforce a checked-in platform budget in CI.
 Builds that execute work report wall-clock, configure, Ninja, compile, archive, link, and action timings.
+
+Project options are declared and typed in the provider, then selected with `-D name=value`. Target-bound tests and
+commands build their prerequisites and consume configured outputs without reconstructing `.drift` paths. Project-owned
+Python actions run through Drift's bundled runtime, including native installs that have no system Python. Composite
+suites keep dependency ordering and resource locks in the graph rather than in a custom scheduler.
+
+Runtime deployment supports explicit mappings and preserved directory trees. Clean bundles remove only files they
+previously owned. Machine-local SDK layouts live in small JSON descriptors with platform and project-option variants;
+descriptor edits and SDK-root environment changes invalidate the warm configuration cache.
 
 ## Cargo
 
@@ -308,7 +318,7 @@ Projects can require an exact Drift release in `drift.toml`:
 [project]
 api-version = 1
 provider = "build:project"
-requires-drift = "==0.2.0"
+requires-drift = "==0.3.0"
 ```
 
 ```console

@@ -835,10 +835,16 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
         available = ", ".join(" ".join(item.path) for item in project.commands) or "none"
         raise ExecutionError(f"Unknown provider command. Available: {available}")
     remaining = raw[len(command.path) :]
+    outputs: dict[str, tuple[Path, ...]] = {}
+    if command.build_targets:
+        from driftbuild.build import build
+
+        result = build(project, root, root / ".drift", _config, tuple(item.name for item in command.build_targets))
+        outputs = dict(result.generated.outputs)
     if command.passthrough:
         if command.options or command.options_type is not None:
             raise ExecutionError(f"Command {' '.join(command.path)} cannot combine passthrough and typed options")
-        context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose)
+        context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose, outputs)
         sys.path.insert(0, str(root))
         try:
             result = command.handler(context, tuple(remaining))
@@ -861,7 +867,7 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
         if not is_dataclass(command.options_type):
             raise ExecutionError(f"Command {' '.join(command.path)} options_type must be a dataclass")
         options = command.options_type(**values)
-    context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose)
+    context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose, outputs)
     sys.path.insert(0, str(root))
     try:
         result = command.handler(context, options)

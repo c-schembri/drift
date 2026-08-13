@@ -110,6 +110,9 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
             raise ConfigurationError(f"Target {target.name} requires an action")
         if target.action is not None and tuple(target.outputs) != tuple(target.action.outputs):
             raise ConfigurationError(f"Target {target.name} outputs do not match its action")
+        if target.action is not None and target.action.handler is not None:
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*", target.action.handler) is None:
+                raise ConfigurationError(f"Target {target.name} has an invalid provider handler")
         unknown_packages = sorted(
             dependency.target.package
             for dependency in target.dependencies
@@ -135,6 +138,10 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
         if default.name not in targets:
             raise ConfigurationError(f"Unknown default target: {default.name}")
 
+    option_names = {option.name for option in project.options}
+    if len(option_names) != len(project.options):
+        raise ConfigurationError("Project option names must be unique")
+
     task_names = {task.name for task in project.tasks}
     if len(task_names) != len(project.tasks):
         raise ConfigurationError("Task names must be unique")
@@ -149,6 +156,13 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
         if task.retries < 0:
             raise ConfigurationError(f"Task {task.name} retries cannot be negative")
 
+    for command in project.commands:
+        unknown = sorted(reference.name for reference in command.build_targets if reference.name not in targets)
+        if unknown:
+            raise ConfigurationError(
+                f"Command {' '.join(command.path)} references unknown targets: {', '.join(unknown)}"
+            )
+
     pool_names = {pool.name for pool in project.pools}
     if len(pool_names) != len(project.pools):
         raise ConfigurationError("Pool names must be unique")
@@ -161,15 +175,54 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
                 raise ConfigurationError(f"Target {target.name} references unknown pool: {target.action.pool}")
 
     for test in project.tests:
-        unknown = sorted(reference.name for reference in test.build_targets if reference.name not in targets)
+        references = (*test.build_targets, *((test.target,) if test.target is not None else ()))
+        unknown = sorted(reference.name for reference in references if reference.name not in targets)
         if unknown:
             raise ConfigurationError(f"Test {test.name} references unknown targets: {', '.join(unknown)}")
+        if not test.command and test.target is None and test.handler is None:
+            raise ConfigurationError(f"Test {test.name} requires a command, target, or handler")
+        if test.command and test.handler is not None:
+            raise ConfigurationError(f"Test {test.name} cannot combine a command and handler")
+        if test.handler is not None and re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*", test.handler
+        ) is None:
+            raise ConfigurationError(f"Test {test.name} has an invalid provider handler")
     test_names = {test.name for test in project.tests}
+    suite_names = {suite.name for suite in project.suites}
+    if len(test_names) != len(project.tests) or len(suite_names) != len(project.suites) or suite_names & test_names:
+        raise ConfigurationError("Test and suite names must be unique")
+    for suite in project.suites:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", suite.name) is None:
+            raise ConfigurationError(f"Invalid suite name: {suite.name!r}")
+        names = {task.name for task in suite.tasks}
+        if len(names) != len(suite.tasks):
+            raise ConfigurationError(f"Suite {suite.name} task names must be unique")
+        for task in suite.tasks:
+            if task.command is None and task.handler is None and not task.dependencies:
+                raise ConfigurationError(f"Suite {suite.name} task {task.name} has no work")
+            if task.command is not None and task.handler is not None:
+                raise ConfigurationError(f"Suite {suite.name} task {task.name} has multiple execution modes")
+            unknown = sorted(set(task.dependencies) - names)
+            if unknown:
+                raise ConfigurationError(
+                    f"Suite {suite.name} task {task.name} references unknown tasks: {', '.join(unknown)}"
+                )
+            if task.retries < 0:
+                raise ConfigurationError(f"Suite {suite.name} task {task.name} retries cannot be negative")
+        _cycles_validate({task.name: set(task.dependencies) for task in suite.tasks})
     for matrix in project.matrices:
         available = targets if matrix.operation == "build" else test_names
         unknown = sorted(set(matrix.targets) - set(available))
         if unknown:
             raise ConfigurationError(f"Matrix {matrix.name} references unknown {matrix.operation} targets: {', '.join(unknown)}")
+        for name, values in matrix.axes:
+            option = next((item for item in project.options if item.name == name), None)
+            if option is not None and option.choices:
+                invalid = sorted(set(values) - set(option.choices))
+                if invalid:
+                    raise ConfigurationError(
+                        f"Matrix {matrix.name} has invalid {name} values: {', '.join(invalid)}"
+                    )
     for benchmark in project.benchmarks:
         unknown = sorted(reference.name for reference in benchmark.build_targets if reference.name not in targets)
         if unknown:

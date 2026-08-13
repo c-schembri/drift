@@ -16,7 +16,7 @@ from driftbuild.cli import (
     _provider_command,
     _run,
 )
-from driftbuild.model import BuildConfig, CommandGroupSpec, CommandSpec, ProjectSpec
+from driftbuild.model import BuildConfig, CommandGroupSpec, CommandSpec, ProjectSpec, TargetRef
 
 
 def test_project_directory_after_command_becomes_root(tmp_path: Path) -> None:
@@ -133,6 +133,28 @@ def test_provider_command_can_import_from_project_root(tmp_path: Path) -> None:
 
     assert _provider_command(arguments, project, tmp_path, BuildConfig("test")) == 7
     assert sys.path[0] != str(tmp_path)
+
+
+def test_provider_command_builds_targets_and_exposes_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "sample.exe"
+    received = None
+
+    def handler(context, _values):  # type: ignore[no-untyped-def]
+        nonlocal received
+        received = context.outputs
+
+    project = ProjectSpec(
+        "sample",
+        commands=(CommandSpec(("deploy",), "Deploy", handler, build_targets=(TargetRef("sample"),)),),
+    )
+    generated = SimpleNamespace(outputs={"sample": (output,)})
+    monkeypatch.setattr("driftbuild.build.build", lambda *_args, **_kwargs: SimpleNamespace(generated=generated))
+    arguments = argparse.Namespace(arguments=["deploy"], verbose=False)
+
+    assert _provider_command(arguments, project, tmp_path, BuildConfig("test")) == 0
+    assert received == {"sample": (output,)}
 
 
 def test_provider_group_help_lists_only_direct_children(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

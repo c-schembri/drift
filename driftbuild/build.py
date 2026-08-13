@@ -141,7 +141,8 @@ def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildC
     build_root = build_root_for(state_root, config)
     build_root.mkdir(parents=True, exist_ok=True)
     result = BuildResult(generate(project, root, build_root, config, toolchain), toolchain)
-    inputs = {str(path): path.stat().st_mtime_ns for path in project_provider_files(root)}
+    configuration_inputs = (*project_provider_files(root), *project.configuration_inputs)
+    inputs = {str(path): path.stat().st_mtime_ns for path in configuration_inputs}
     directories = {str(path): path.stat().st_mtime_ns for path in project.discovery_directories}
     environment = {
         name: value
@@ -157,6 +158,9 @@ def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildC
         "environment": environment,
         "environment_removed": environment_removed,
         "output_phases": output_phases,
+        "configuration_environment": {
+            name: os.environ.get(name) for name in project.configuration_environment
+        },
     }
     (build_root / "configured.json").write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     return result

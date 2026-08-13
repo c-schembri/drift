@@ -188,3 +188,71 @@ def test_dependency_accepts_deployed_external_runtime_file(tmp_path: Path) -> No
     assert isinstance(deployed, Deployment)
     assert deployed.source == external.resolve()
     assert deployed.destination == Path("plugins/external.dll")
+
+
+def test_project_options_are_typed_and_validated(tmp_path: Path) -> None:
+    api = ProjectApi(tmp_path, BuildConfig("test", values={"flavor": "retail", "workers": "4"}))
+
+    assert api.option("flavor", choices=("developer", "retail"), default="developer") == "retail"
+    assert api.option("workers", value_type=int, default=1) == 4
+    assert [option.name for option in api.project("sample").options] == ["flavor", "workers"]
+
+    invalid = ProjectApi(tmp_path, BuildConfig("test", values={"flavor": "unknown"}))
+    with pytest.raises(ConfigurationError, match="must be one of"):
+        invalid.option("flavor", choices=("developer", "retail"), default="developer")
+
+    with pytest.raises(ConfigurationError, match="default must be int"):
+        ProjectApi(tmp_path, BuildConfig("test")).option("workers", value_type=int, default="four")
+
+
+def test_provider_action_records_an_importable_handler(tmp_path: Path) -> None:
+    api = api_for(tmp_path)
+    handler = tmp_path / "build_tools.py"
+    handler.write_text("def generate(arguments):\n    return 0\n", encoding="utf-8")
+
+    action = api.provider_action("build_tools:generate", ("{in:0}", "{out}"), outputs=("generated.txt",))
+
+    assert action.handler == "build_tools:generate"
+    assert action.command == ("{in:0}", "{out}")
+    assert action.implicit_inputs == (handler.resolve(),)
+
+
+def test_deploy_tree_preserves_relative_paths(tmp_path: Path) -> None:
+    (tmp_path / "assets" / "nested").mkdir(parents=True)
+    (tmp_path / "assets" / "one.txt").write_text("one", encoding="utf-8")
+    (tmp_path / "assets" / "nested" / "two.txt").write_text("two", encoding="utf-8")
+    api = api_for(tmp_path)
+
+    deployments = api.deploy_tree(api.tree("assets"), "assets", "data")
+
+    assert [item.destination.as_posix() for item in deployments] == ["data/nested/two.txt", "data/one.txt"]
+
+
+def test_local_sdk_loads_selected_interface(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk = tmp_path / "sdk"
+    (sdk / "include").mkdir(parents=True)
+    (sdk / "lib").mkdir()
+    (sdk / "bin").mkdir()
+    (sdk / "lib" / "sample.lib").write_bytes(b"lib")
+    (sdk / "bin" / "sample.dll").write_bytes(b"dll")
+    descriptor = tmp_path / "sample.sdk.json"
+    descriptor.write_text(
+        '{"include_dirs":["include"],"libraries":["lib/sample.lib"],'
+        '"runtime_files":["bin/sample.dll"],"defines":["SAMPLE=1"]}',
+        encoding="utf-8",
+    )
+    api = api_for(tmp_path)
+    monkeypatch.setenv("SAMPLE_SDK_ROOT", str(sdk))
+
+    dependency = api.local_sdk(
+        "sample", descriptor="sample.sdk.json", environment=("SAMPLE_SDK_ROOT",), roots=(tmp_path / "missing",)
+    )
+
+    assert dependency.root == sdk
+    assert dependency.compile.include_dirs == (sdk / "include",)
+    assert dependency.compile.defines == ("SAMPLE=1",)
+    assert dependency.link.libraries == (sdk / "lib" / "sample.lib",)
+    assert dependency.runtime_files == (sdk / "bin" / "sample.dll",)
+    project = api.project("sample")
+    assert project.configuration_inputs == (descriptor,)
+    assert project.configuration_environment == ("SAMPLE_SDK_ROOT",)

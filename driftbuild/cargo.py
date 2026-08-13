@@ -39,7 +39,18 @@ def _artifact_find(messages: list[dict[str, Any]], kind: str, name: str) -> Path
             continue
         filenames = message.get("filenames", [])
         candidates = [Path(value) for value in filenames if isinstance(value, str)]
-        static = next((path for path in candidates if path.suffix.casefold() in (".a", ".lib")), None)
+        expected = {f"{normalized}.lib".casefold(), f"lib{normalized}.a".casefold()}
+        static = next((path for path in candidates if path.name.casefold() in expected), None)
+        if static is None:
+            static = next(
+                (
+                    path
+                    for path in candidates
+                    if path.suffix.casefold() in (".a", ".lib")
+                    and not path.name.casefold().endswith(".dll.lib")
+                ),
+                None,
+            )
         if static is not None:
             return static
     return None

@@ -17,7 +17,21 @@ def project(api: ProjectApi):
         sources=api.files("src/main.cpp"),
         dependencies=(api.private(math),),
     )
-    assets = api.runtime_bundle("assets", api.files("assets/message.txt"), destination="bin")
+    generated_message = api.custom_target(
+        "generated-message",
+        api.provider_action(
+            "codegen:generate_message",
+            ("{out}",),
+            outputs=("generated/message.txt",),
+            description="GENERATE message.txt",
+            restat=True,
+        ),
+    )
+    assets = api.runtime_bundle(
+        "assets",
+        (api.deploy(api.output(generated_message), "message.txt"),),
+        destination="bin",
+    )
     all_targets = api.alias("all", (hello, assets))
     executable = str(
         api.root
@@ -29,7 +43,7 @@ def project(api: ProjectApi):
     )
     if sys.platform == "win32":
         executable += ".exe"
-    api.test(TestSpec("hello", (executable,), labels=("native", "smoke"), build_targets=(hello,)))
+    api.test(TestSpec("hello", target=hello, labels=("native", "smoke")))
     api.benchmark(BenchmarkSpec("hello-startup", (executable,), build_targets=(hello,), warmups=1, repetitions=3))
     api.artifact(ArtifactSpec("hello", (api.output(hello), Path("assets/message.txt"))))
     return api.project("native-fixture", defaults=(all_targets,))
