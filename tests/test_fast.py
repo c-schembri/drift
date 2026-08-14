@@ -8,7 +8,15 @@ import pytest
 
 from driftbuild import __version__
 from driftbuild.configuration import config_key
-from driftbuild.fast import _architecture, _cached_build, _ninja_build_arguments, _operation_find, _state_load, main
+from driftbuild.fast import (
+    _architecture,
+    _cached_build,
+    _cached_run,
+    _ninja_build_arguments,
+    _operation_find,
+    _state_load,
+    main,
+)
 from driftbuild.model import BuildConfig
 from driftbuild.versions import NINJA_VERSION
 
@@ -82,6 +90,66 @@ def test_cached_build_uses_shared_ninja_provider_values_and_environment(
     assert observed["command"] == [str(ninja), "-f", "build.ninja"]
     assert observed["cwd"] == build_root
     assert observed["environment"]["DRIFT_TEST_CACHED"] == "configured"  # type: ignore[index]
+
+
+def test_cached_run_builds_declared_target_and_launches_without_loading_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    manifest = root / "drift.toml"
+    manifest.write_text("[project]\n", encoding="utf-8")
+    config = BuildConfig(sys.platform, _architecture())
+    build_root = root / ".drift" / "build" / config_key(config)
+    build_root.mkdir(parents=True)
+    (build_root / "build.ninja").touch()
+    executable = root / "build" / "sample.exe"
+    configured = {
+        "drift_version": __version__,
+        "inputs": {str(manifest): manifest.stat().st_mtime_ns},
+        "directories": {str(root): root.stat().st_mtime_ns},
+        "environment": {},
+        "environment_removed": [],
+        "output_phases": {},
+        "configuration_environment": {},
+        "run_commands": [
+            {
+                "path": ["client"],
+                "target": "sample",
+                "build_targets": ["sample", "editor"],
+                "command": [str(executable)],
+                "working_directory": str(executable.parent),
+                "environment": {"SAMPLE": "configured"},
+                "runtime_directories": [str(executable.parent)],
+                "executable": str(executable),
+            }
+        ],
+    }
+    (build_root / "configured.json").write_text(json.dumps(configured), encoding="utf-8")
+    cache = tmp_path / "cache"
+    ninja = cache / "tools" / "ninja" / NINJA_VERSION / ("ninja.exe" if os.name == "nt" else "ninja")
+    ninja.parent.mkdir(parents=True)
+    ninja.touch()
+    observed: dict[str, object] = {}
+
+    def run_fake(command, **kwargs):
+        observed["ninja"] = command
+        return subprocess.CompletedProcess(command, 0)
+
+    def launch_fake(spec, arguments):  # type: ignore[no-untyped-def]
+        observed["spec"] = spec
+        observed["arguments"] = arguments
+        return 7
+
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("DRIFT_HOME", str(cache))
+    monkeypatch.setattr("driftbuild.fast.subprocess.run", run_fake)
+    monkeypatch.setattr("driftbuild.runner.launch", launch_fake)
+
+    assert _cached_run(["run", "client", "--", "--sample"], 0.0) == 7
+    assert observed["ninja"] == [str(ninja), "-f", "build.ninja", "sample", "editor"]
+    assert observed["arguments"] == ["--sample"]
+    assert observed["spec"].target == "sample"  # type: ignore[union-attr]
 
 
 def test_cached_state_invalidates_when_discovery_directory_changes(tmp_path: Path) -> None:

@@ -301,11 +301,12 @@ class CommandSpec:
 
     path: tuple[str, ...]
     help: str
-    handler: Callable[..., Any]
+    handler: Callable[..., Any] | None = None
     options: tuple[OptionSpec, ...] = ()
     options_type: type[Any] | None = None
     passthrough: bool = False
     build_targets: tuple[TargetRef, ...] = ()
+    run_target: TargetRef | None = None
 
 
 @dataclass(frozen=True)

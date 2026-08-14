@@ -17,7 +17,15 @@ from driftbuild.cli import (
     _run,
     _sdk,
 )
-from driftbuild.model import BuildConfig, CommandGroupSpec, CommandSpec, LocalSdkSpec, ProjectSpec, TargetRef
+from driftbuild.model import (
+    BuildConfig,
+    CommandGroupSpec,
+    CommandSpec,
+    LocalSdkSpec,
+    ProjectSpec,
+    TargetRef,
+    TargetSpec,
+)
 
 
 def test_project_directory_after_command_becomes_root(tmp_path: Path) -> None:
@@ -134,6 +142,37 @@ def test_run_dispatches_provider_subcommands(tmp_path: Path) -> None:
 
     assert _run(arguments, project, tmp_path, BuildConfig("test")) == 3
     assert received == ("global",)
+
+
+def test_run_dispatches_declarative_target_without_provider_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    received: tuple[str, tuple[str, ...], tuple[str, ...]] | None = None
+
+    def build_and_run_fake(  # type: ignore[no-untyped-def]
+        _project, _root, _state_root, _config, target, arguments, build_targets
+    ):
+        nonlocal received
+        received = target, tuple(arguments), tuple(build_targets)
+        return 4
+
+    project = ProjectSpec(
+        "sample",
+        commands=(
+            CommandSpec(
+                ("run", "client"),
+                "Run the client",
+                build_targets=(TargetRef("editor"),),
+                run_target=TargetRef("app"),
+            ),
+        ),
+        targets=(TargetSpec("app", "executable"), TargetSpec("editor", "shared_library")),
+    )
+    arguments = argparse.Namespace(arguments=["client", "--", "--sample"], verbose=False, offline=False)
+    monkeypatch.setattr("driftbuild.runner.build_and_run", build_and_run_fake)
+
+    assert _run(arguments, project, tmp_path, BuildConfig("test")) == 4
+    assert received == ("app", ("--sample",), ("editor",))
 
 
 def test_run_dispatches_provider_subcommand_help(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

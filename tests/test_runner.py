@@ -50,12 +50,12 @@ def test_runs_executable_from_its_output_directory(tmp_path: Path, monkeypatch: 
     )
     result = SimpleNamespace(
         timing=object(),
-        generated=SimpleNamespace(outputs={"sample": (executable,)}),
+        generated=SimpleNamespace(outputs={"sample": (executable,)}, ninja_file=tmp_path / "build/build.ninja"),
     )
     observed: dict[str, object] = {}
 
-    monkeypatch.setattr("driftbuild.runner.build", lambda *_args: result)
-    monkeypatch.setattr("driftbuild.runner.build_timing_render", lambda _timing: "timing")
+    monkeypatch.setattr("driftbuild.build.build", lambda *_args: result)
+    monkeypatch.setattr("driftbuild.build.build_timing_render", lambda _timing: "timing")
 
     def run_fake(command, *, cwd, environment, check):
         observed["command"] = command
@@ -93,8 +93,8 @@ def test_custom_run_command_expands_built_output(tmp_path: Path, monkeypatch: py
         generated=SimpleNamespace(outputs={"server": (executable,)}, ninja_file=tmp_path / "build/build.ninja"),
     )
     observed: dict[str, object] = {}
-    monkeypatch.setattr("driftbuild.runner.build", lambda *_args: result)
-    monkeypatch.setattr("driftbuild.runner.build_timing_render", lambda _timing: "timing")
+    monkeypatch.setattr("driftbuild.build.build", lambda *_args: result)
+    monkeypatch.setattr("driftbuild.build.build_timing_render", lambda _timing: "timing")
 
     def run_fake(command, *, cwd, environment, check):
         observed["command"] = command

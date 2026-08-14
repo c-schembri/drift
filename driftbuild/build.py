@@ -135,6 +135,31 @@ def build_root_for(state_root: Path, config: BuildConfig) -> Path:
     return state_root / "build" / config_key(config)
 
 
+def _run_commands_state(project: ProjectSpec, root: Path, generated: GeneratedBuild) -> list[dict[str, object]]:
+    from driftbuild.runner import launch_spec
+
+    commands: list[dict[str, object]] = []
+    for command in project.commands:
+        if command.run_target is None:
+            continue
+        spec = launch_spec(project, generated.outputs, root, generated.ninja_file.parent, command.run_target.name)
+        commands.append(
+            {
+                "path": list(command.path[1:]),
+                "target": spec.target,
+                "build_targets": [
+                    target.name for target in dict.fromkeys((*command.build_targets, command.run_target))
+                ],
+                "command": list(spec.command),
+                "working_directory": str(spec.working_directory),
+                "environment": dict(spec.environment),
+                "runtime_directories": [str(path) for path in spec.runtime_directories],
+                "executable": str(spec.executable) if spec.executable is not None else None,
+            }
+        )
+    return commands
+
+
 def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildConfig) -> BuildResult:
     """Generate backend files without invoking the compiler."""
     toolchain = toolchain_resolve(config, state_root)
@@ -161,6 +186,7 @@ def configure(project: ProjectSpec, root: Path, state_root: Path, config: BuildC
         "configuration_environment": {
             name: os.environ.get(name) for name in project.configuration_environment
         },
+        "run_commands": _run_commands_state(project, root, result.generated),
     }
     (build_root / "configured.json").write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     return result
