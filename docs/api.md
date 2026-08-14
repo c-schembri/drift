@@ -111,6 +111,8 @@ the set can be narrowed with `checks=`.
   arguments unchanged.
 - Commands rooted at `("run", ...)` extend `drift run` with project-specific launch workflows. They can build declared
   targets first and then supply configuration, materialize runtime state, or select one of several related programs.
+  For a direct launch alias, set `run_target=` instead of a handler; Drift records that route in configured state so
+  unchanged `drift run` invocations can build through cached Ninja state without reevaluating the provider graph.
 
 ## Project options and local SDKs
 

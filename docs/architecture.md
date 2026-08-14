@@ -9,7 +9,7 @@ Drift separates project policy from execution in seven stages:
    selected inputs, while local SDK copying remains an explicit `drift sdk materialize` operation.
 3. `drift.lock` fixes scoped external source identities and verified content digests without executing build adapters.
 4. Locked package projects and their transitive Drift packages are loaded from the content-addressed store and composed
-   under collision-proof target names.
+under collision-proof target names.
 5. Graph validation checks identities, references, cycles, outputs, and workflow prerequisites before execution.
 6. The Ninja backend lowers native targets into a stable out-of-tree build and emits `compile_commands.json`.
 7. IDE frontends may project that validated graph for editing and debugging, but delegate builds back to Drift.
@@ -22,8 +22,9 @@ when `DRIFT_HOME` is unset. Configuration directories are keyed by platform, tar
 sysroot, toolchain, and provider values. File discovery is sorted, root-confined,
 excludes symlinks, and rejects case collisions. Generated files are replaced only when their bytes change, preserving
 no-op performance. A configured build records provider inputs, the directory structure observed by `api.tree()`, the
-toolchain environment delta, and generated output phases. As long as those inputs remain current, later builds execute
-the cached Ninja graph directly; changing provider code or adding or removing a discovered file forces graph evaluation.
+toolchain environment delta, generated output phases, and declarative provider run routes. As long as those inputs remain
+current, later builds and direct run aliases execute the cached Ninja graph directly; changing provider code or adding or
+removing a discovered file forces graph evaluation.
 
 Shared cache deletion is never implicit. `drift cache status` measures each ownership category, while cleanup requires
 both an explicit category and `--yes`; every deletion target is checked as a strict child of `DRIFT_HOME`.

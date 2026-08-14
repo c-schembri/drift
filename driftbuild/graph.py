@@ -167,11 +167,24 @@ def project_validate(project: ProjectSpec) -> dict[str, TargetSpec]:
             raise ConfigurationError(f"Task {task.name} retries cannot be negative")
 
     for command in project.commands:
-        unknown = sorted(reference.name for reference in command.build_targets if reference.name not in targets)
+        references = (*command.build_targets, *((command.run_target,) if command.run_target is not None else ()))
+        unknown = sorted(reference.name for reference in references if reference.name not in targets)
         if unknown:
             raise ConfigurationError(
                 f"Command {' '.join(command.path)} references unknown targets: {', '.join(unknown)}"
             )
+        if command.run_target is not None:
+            if command.path[:1] != ("run",):
+                raise ConfigurationError(f"Command {' '.join(command.path)} run_target requires a run command")
+            if command.handler is not None or command.options or command.options_type is not None:
+                raise ConfigurationError(f"Command {' '.join(command.path)} run_target cannot combine execution modes")
+            target = targets[command.run_target.name]
+            if target.kind != "executable" and not target.run_command:
+                raise ConfigurationError(
+                    f"Command {' '.join(command.path)} references non-runnable target: {command.run_target.name}"
+                )
+        elif command.handler is None:
+            raise ConfigurationError(f"Command {' '.join(command.path)} requires a handler or run_target")
 
     pool_names = {pool.name for pool in project.pools}
     if len(pool_names) != len(project.pools):

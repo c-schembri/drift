@@ -5,6 +5,7 @@ import pytest
 from driftbuild.errors import ConfigurationError
 from driftbuild.graph import project_validate, transitive_targets
 from driftbuild.model import (
+    CommandSpec,
     Deployment,
     MatrixSpec,
     ProjectSpec,
@@ -71,4 +72,25 @@ def test_suite_tasks_cannot_recursively_reference_suites() -> None:
     )
 
     with pytest.raises(ConfigurationError, match="references unknown test: full"):
+        project_validate(project)
+
+
+def test_run_command_can_declaratively_launch_one_target() -> None:
+    project = ProjectSpec(
+        "sample",
+        targets=(TargetSpec("app", "executable"),),
+        commands=(CommandSpec(("run", "client"), "Run the client", run_target=TargetRef("app")),),
+    )
+
+    assert project_validate(project)["app"].kind == "executable"
+
+
+def test_run_target_rejects_non_run_commands() -> None:
+    project = ProjectSpec(
+        "sample",
+        targets=(TargetSpec("app", "executable"),),
+        commands=(CommandSpec(("deploy",), "Deploy", run_target=TargetRef("app")),),
+    )
+
+    with pytest.raises(ConfigurationError, match="run_target requires a run command"):
         project_validate(project)

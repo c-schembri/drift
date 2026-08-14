@@ -863,6 +863,23 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
         available = ", ".join(" ".join(item.path) for item in project.commands) or "none"
         raise ExecutionError(f"Unknown provider command. Available: {available}")
     remaining = raw[len(command.path) :]
+    if command.run_target is not None:
+        from driftbuild.runner import build_and_run
+
+        parser = argparse.ArgumentParser(prog=f"drift {' '.join(command.path)}", description=command.help)
+        parser.add_argument("arguments", nargs=argparse.REMAINDER)
+        program_arguments = parser.parse_args(remaining).arguments
+        if program_arguments[:1] == ["--"]:
+            program_arguments = program_arguments[1:]
+        return build_and_run(
+            project,
+            root,
+            root / ".drift",
+            _config,
+            command.run_target.name,
+            program_arguments,
+            tuple(target.name for target in command.build_targets),
+        )
     python_environment_activate(project, root / ".drift", offline=getattr(arguments, "offline", False))
     outputs: dict[str, tuple[Path, ...]] = {}
     if command.build_targets:
@@ -874,6 +891,7 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
         if command.options or command.options_type is not None:
             raise ExecutionError(f"Command {' '.join(command.path)} cannot combine passthrough and typed options")
         context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose, outputs)
+        assert command.handler is not None
         sys.path.insert(0, str(root))
         try:
             result = command.handler(context, tuple(remaining))
@@ -897,6 +915,7 @@ def _provider_command(arguments: argparse.Namespace, project: ProjectSpec, root:
             raise ExecutionError(f"Command {' '.join(command.path)} options_type must be a dataclass")
         options = command.options_type(**values)
     context = CommandContext(root, root / ".drift", dict(os.environ), arguments.verbose, outputs)
+    assert command.handler is not None
     sys.path.insert(0, str(root))
     try:
         result = command.handler(context, options)
